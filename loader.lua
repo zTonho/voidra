@@ -71,11 +71,26 @@ end
 
 local Library = run("Library.lua")
 
+local Loading = Library:CreateLoading({
+    Title = "voidra",
+    CurrentStep = 1,
+    TotalSteps = 5,
+    AutoResizeHeight = true,
+    WindowWidth = 430,
+    WindowHeight = 250,
+})
+
+Loading:SetMessage("Loading voidra")
+Loading:SetDescription("made by zz.tonho")
+
 local ThemeManagerOk, ThemeManager = pcall(run, "addons/ThemeManager.lua")
 if not ThemeManagerOk then
     warn("[voidra] ThemeManager failed to load: " .. tostring(ThemeManager))
     ThemeManager = nil
 end
+
+Loading:SetMessage("Loading theme manager")
+Loading:SetCurrentStep(2)
 
 local SaveManagerOk, SaveManager = pcall(run, "addons/SaveManager.lua")
 if not SaveManagerOk then
@@ -83,11 +98,17 @@ if not SaveManagerOk then
     SaveManager = nil
 end
 
+Loading:SetMessage("Loading save manager")
+Loading:SetCurrentStep(3)
+
 local Options = Library.Options
 local Toggles = Library.Toggles
 
 Library.ForceCheckbox = false
 Library.ShowToggleFrameInKeybinds = true
+
+Loading:SetMessage("Creating window")
+Loading:SetCurrentStep(4)
 
 local Window = Library:CreateWindow({
     Title = "voidra",
@@ -101,126 +122,19 @@ local Window = Library:CreateWindow({
 
 local Tabs = {
     Main = Window:AddTab("Main", "house"),
-    Players = Window:AddTab("Players", "users"),
     Settings = Window:AddTab("UI Settings", "settings"),
 }
 
-Tabs.Main:UpdateWarningBox({
-    Visible = true,
-    Title = "voidra",
-    Text = "Executor template loaded.",
-    IsNormal = true,
-    LockSize = true,
-})
-
 local State = {
-    Enabled = false,
-    Amount = 50,
-    Mode = "Default",
-    Text = "",
-    SelectedPlayer = nil,
+    Loaded = true,
 }
 
-local MainBox = Tabs.Main:AddLeftGroupbox("Controls", "sliders-horizontal")
-local InfoBox = Tabs.Main:AddRightGroupbox("Status", "info")
-local PlayerBox = Tabs.Players:AddLeftGroupbox("Players", "users")
-
-InfoBox:AddLabel("Use this file as the base for your hub.", true)
-InfoBox:AddLabel("Create UI first, then connect callbacks with Options/Toggles.", true)
-InfoBox:AddLabel("Add your game remotes and systems inside loader.lua.", true)
-
-MainBox:AddToggle("VoidraEnabled", {
-    Text = "Enabled",
-    Default = false,
-    Tooltip = "Example toggle using Toggles.VoidraEnabled:OnChanged.",
-})
-
-MainBox:AddSlider("VoidraAmount", {
-    Text = "Amount",
-    Default = 50,
-    Min = 0,
-    Max = 100,
-    Rounding = 0,
-    Suffix = "%",
-})
-
-MainBox:AddDropdown("VoidraMode", {
-    Text = "Mode",
-    Values = { "Default", "Safe", "Fast" },
-    Default = 1,
-    Multi = false,
-    Searchable = false,
-})
-
-MainBox:AddInput("VoidraText", {
-    Text = "Text value",
-    Placeholder = "Type here",
-    Default = "",
-    Finished = false,
-    ClearTextOnFocus = false,
-})
-
-MainBox:AddButton({
-    Text = "Notify current state",
-    Func = function()
-        Library:Notify({
-            Title = "voidra",
-            Description = ("Enabled: %s | Amount: %s | Mode: %s"):format(
-                tostring(State.Enabled),
-                tostring(State.Amount),
-                tostring(State.Mode)
-            ),
-            Time = 4,
-        })
-    end,
-})
-
-PlayerBox:AddDropdown("VoidraPlayer", {
-    Text = "Target player",
-    Values = {},
-    SpecialType = "Player",
-    ExcludeLocalPlayer = true,
-    EnablePlayerImages = true,
-    AllowNull = true,
-    Searchable = true,
-})
-
-PlayerBox:AddButton({
-    Text = "Print selected player",
-    Func = function()
-        local player = State.SelectedPlayer
-
-        Library:Notify({
-            Title = "voidra",
-            Description = player and ("Selected: " .. player.Name) or "No player selected.",
-            Time = 3,
-        })
-    end,
-})
+local MainBox = Tabs.Main:AddLeftGroupbox("Main", "house")
+MainBox:AddLabel("voidra loaded.", true)
 
 -- Add your own game services/remotes here.
 -- local ReplicatedStorage = game:GetService("ReplicatedStorage")
 -- local Events = ReplicatedStorage:WaitForChild("Events")
-
-Toggles.VoidraEnabled:OnChanged(function(value)
-    State.Enabled = value
-end)
-
-Options.VoidraAmount:OnChanged(function(value)
-    State.Amount = value
-end)
-
-Options.VoidraMode:OnChanged(function(value)
-    State.Mode = value
-end)
-
-Options.VoidraText:OnChanged(function(value)
-    State.Text = value
-end)
-
-Options.VoidraPlayer:OnChanged(function(value)
-    State.SelectedPlayer = value
-end)
 
 if ThemeManager then
     ThemeManager:SetLibrary(Library)
@@ -247,6 +161,11 @@ if SaveManager then
         SaveManager:LoadAutoloadConfig()
     end)
 end
+
+Loading:SetMessage("Finalizing")
+Loading:SetCurrentStep(5)
+task.wait(0.25)
+Loading:Destroy()
 
 Library:Notify({
     Title = "voidra",
