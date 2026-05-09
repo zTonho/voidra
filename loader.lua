@@ -129,9 +129,6 @@ local State = {
     Loaded = true,
 }
 
-local MainBox = Tabs.Main:AddLeftGroupbox("Main", "house")
-MainBox:AddLabel("voidra loaded.", true)
-
 -- Add your own game services/remotes here.
 -- local ReplicatedStorage = game:GetService("ReplicatedStorage")
 -- local Events = ReplicatedStorage:WaitForChild("Events")
