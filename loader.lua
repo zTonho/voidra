@@ -119,8 +119,8 @@ local Window = Library:CreateWindow({
     Footer = "voidra",
     AutoShow = true,
     Center = true,
-    Resizable = true,
-    NotifySide = "Right",
+    Resizable = false,
+    NotifySide = "Left",
     ShowCustomCursor = true,
 })
 
