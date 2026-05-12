@@ -117,7 +117,7 @@ Loading:SetCurrentStep(4)
 local Window = Library:CreateWindow({
     Title = "voidra",
     Footer = "voidra",
-    Icon = "rbxassetid://72727931085836",
+    Icon = "rbxthumb://type=Asset&id=72727931085836&w=150&h=150",
     IconSize = UDim2.fromOffset(18, 18),
     Font = Enum.Font.RobotoMono,
     AutoShow = true,
@@ -722,6 +722,14 @@ if SaveManager then
         SaveManager:LoadAutoloadConfig()
     end)
 end
+
+pcall(function()
+    Library:SetFont(Enum.Font.RobotoMono)
+
+    if Options.FontFace then
+        Options.FontFace:SetValue("RobotoMono")
+    end
+end)
 
 Loading:SetMessage("Finalizing")
 Loading:SetCurrentStep(5)
