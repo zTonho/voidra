@@ -705,10 +705,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 local MiningState = State.Mining
 local MiningChargeTime = 0.63
-local MiningActionDelay = 0.04
+local MiningActionDelay = 0.01
 local MiningTeleportOffset = 5
 local MiningIdleDelay = 0.35
-local MiningMaxHitsPerOre = 60
+local MiningMaxHitsPerOre = 140
 local MiningChargeUiTimeout = 0.5
 local MiningCooldownDelay = 0.65
 local MiningGetOreMaxChargeMisses = 8
@@ -728,13 +728,18 @@ local MiningAutoRouteDelay = 0.012
 local MiningAutoRouteFinalRepeats = 4
 local MiningAutoBatchDelay = 0.004
 local MiningBagCapacity = 5
-local MiningBagStoreDelay = 0.04
-local MiningBagStoreTimeout = 0.3
-local MiningBagDropDelay = 0.05
+local MiningBagStoreDelay = 0.06
+local MiningBagStorePositionDelay = 0.12
+local MiningBagDropDelay = 0.06
+local MiningBagDropVerifyDelay = 0.12
+local MiningGrabReleaseRepeats = 6
+local MiningGrabReleaseDelay = 0.04
 local MiningDropWaitTimeout = 0.25
 local MiningDropPollDelay = 0.02
 local MiningTargetSettleDelay = 0.03
-local MiningAttackResultDelay = 0.08
+local MiningAttackResultDelay = 0.02
+local MiningAttackBurstCount = 7
+local MiningAttackBurstDelay = 0.01
 local MiningTeleportRefreshDistance = 12
 local MiningOreSpotLoadDelay = 4
 local MiningOreSpotLoadCooldown = 20
@@ -1784,6 +1789,19 @@ local function setCharacterAt(position)
     return true
 end
 
+local function setCharacterExactAt(position)
+    local root = getRoot()
+
+    if not root or not position then
+        return false
+    end
+
+    root.CFrame = CFrame.new(position)
+    root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+    return true
+end
+
 local function setGrabPartAt(part, position)
     pcall(function()
         part.CFrame = CFrame.new(position)
@@ -1800,12 +1818,24 @@ local function getItemBag()
     local character = getCharacter()
     local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
 
+    local function isItemBagObject(object)
+        local name = object.Name:lower()
+        return object.Name == "Item Bag"
+            or (name:find("item", 1, true) ~= nil and name:find("bag", 1, true) ~= nil)
+    end
+
     for _, container in ipairs({ character, backpack, LocalPlayer }) do
         if container then
             local bag = container:FindFirstChild("Item Bag")
 
-            if bag then
+            if bag and (bag:IsA("Tool") or bag:FindFirstChild("Action")) then
                 return bag
+            end
+
+            for _, object in ipairs(container:GetDescendants()) do
+                if isItemBagObject(object) and (object:IsA("Tool") or object:FindFirstChild("Action")) then
+                    return object
+                end
             end
         end
     end
@@ -1865,24 +1895,29 @@ local function storePartInItemBag(part)
 
     if position then
         setCharacterAt(position)
-        task.wait(MiningBagStoreDelay)
+        task.wait(MiningBagStorePositionDelay)
     end
 
     if not callRemote(action, "Store", part) then
         return false
     end
 
-    local startedAt = os.clock()
+    task.wait(MiningBagStoreDelay)
+    return true
+end
 
-    repeat
-        if not isDroppedPartActive(part) then
-            return true
-        end
+local function partNeedsFallbackAfterBagDrop(part)
+    if not isDroppedPartActive(part) then
+        return false
+    end
 
-        task.wait(MiningBagStoreDelay)
-    until os.clock() - startedAt >= MiningBagStoreTimeout
+    local position = getPosition(part)
 
-    return not isDroppedPartActive(part)
+    if not position then
+        return false
+    end
+
+    return not isInsideLocalPlot(position, 6)
 end
 
 local function dropItemBagAtBase(startSlot, amount)
@@ -1905,7 +1940,8 @@ local function dropItemBagAtBase(startSlot, amount)
             break
         end
 
-        setCharacterAt(destination)
+        setCharacterExactAt(destination + Vector3.new(0, 2.5, 0))
+        task.wait(MiningBagDropDelay)
 
         if callRemote(action, "Drop") then
             dropped = dropped + 1
@@ -1974,7 +2010,17 @@ local function moveGrabPartToBaseRouted(part, destination)
         task.wait(MiningAutoRouteDelay)
     end
 
-    callGrabHandler(part, "Ungrab")
+    for _ = 1, MiningGrabReleaseRepeats do
+        if not part.Parent then
+            break
+        end
+
+        setCharacterAt(destination)
+        setGrabPartAt(part, destination)
+        callGrabHandler(part, "Ungrab")
+        task.wait(MiningGrabReleaseDelay)
+    end
+
     task.wait(MiningDropSettleDelay)
     return moved
 end
@@ -1990,38 +2036,47 @@ local function moveDroppedOresToBase(origin)
     local parts = waitForDroppedOreParts(origin)
     local useItemBag = canUseItemBagTransport()
     local moved = 0
-    local storedInBag = 0
+    local storedInBag = {}
     local fallbackParts = {}
+
+    local function flushItemBag()
+        if #storedInBag <= 0 then
+            return
+        end
+
+        local dropped = dropItemBagAtBase(moved + 1, #storedInBag)
+
+        if dropped <= 0 then
+            miningWarn("Item Bag drop failed.")
+        end
+
+        task.wait(MiningBagDropVerifyDelay)
+
+        for _, storedPart in ipairs(storedInBag) do
+            if partNeedsFallbackAfterBagDrop(storedPart) then
+                fallbackParts[#fallbackParts + 1] = storedPart
+            else
+                moved = moved + 1
+            end
+        end
+
+        storedInBag = {}
+        task.wait(MiningAutoBatchDelay)
+    end
 
     for _, part in ipairs(parts) do
         if useItemBag and storePartInItemBag(part) then
-            storedInBag = storedInBag + 1
+            storedInBag[#storedInBag + 1] = part
 
-            if storedInBag >= MiningBagCapacity then
-                local dropped = dropItemBagAtBase(moved + 1, storedInBag)
-
-                if dropped <= 0 then
-                    miningWarn("Item Bag drop failed.")
-                end
-
-                moved = moved + dropped
-                storedInBag = 0
-                task.wait(MiningAutoBatchDelay)
+            if #storedInBag >= MiningBagCapacity then
+                flushItemBag()
             end
         else
             fallbackParts[#fallbackParts + 1] = part
         end
     end
 
-    if storedInBag > 0 then
-        local dropped = dropItemBagAtBase(moved + 1, storedInBag)
-
-        if dropped <= 0 then
-            miningWarn("Item Bag drop failed.")
-        end
-
-        moved = moved + dropped
-    end
+    flushItemBag()
 
     if #fallbackParts > 0 and not GrabHandlerRemote then
         miningWarn("GrabHandler remote was not found.")
@@ -2383,17 +2438,26 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
         else
             chargeMisses = 0
 
-            task.wait(MiningChargeTime)
+            local attacksFired = 0
 
-            if shouldStopForUnequip() then
-                miningNotify("Get ore stopped: pickaxe unequipped.")
-                break
+            for _ = 1, MiningAttackBurstCount do
+                if shouldStopForUnequip() then
+                    miningNotify("Get ore stopped: pickaxe unequipped.")
+                    break
+                end
+
+                if not entry.Ore or entry.Ore.Parent ~= getOresFolder() then
+                    break
+                end
+
+                AttackRemote:FireServer({
+                    Alpha = 1,
+                    ResponseTime = MiningChargeTime,
+                })
+
+                attacksFired = attacksFired + 1
+                task.wait(MiningAttackBurstDelay)
             end
-
-            AttackRemote:FireServer({
-                Alpha = 1,
-                ResponseTime = MiningChargeTime,
-            })
 
             task.wait(MiningAttackResultDelay)
 
@@ -2408,7 +2472,7 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
                 tierWarnings = 0
             end
 
-            hits = hits + 1
+            hits = hits + attacksFired
             task.wait(MiningActionDelay)
         end
     end
