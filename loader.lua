@@ -711,6 +711,7 @@ local MiningIdleDelay = 0.35
 local MiningMaxHitsPerOre = 60
 local MiningChargeUiTimeout = 0.5
 local MiningCooldownDelay = 0.65
+local MiningGetOreMaxChargeMisses = 8
 local MiningDropScanRadius = 14
 local MiningGrabSteps = 8
 local MiningGrabStepDelay = 0.015
@@ -721,7 +722,10 @@ local MiningFastGrabDelay = 0.002
 local MiningStorageBatchDelay = 0.004
 local MiningAutoGrabRepeats = 2
 local MiningAutoGrabDelay = 0.002
-local MiningAutoLiftHeight = 85
+local MiningAutoLiftHeight = 180
+local MiningAutoRouteStepDistance = 650
+local MiningAutoRouteDelay = 0.012
+local MiningAutoRouteFinalRepeats = 4
 local MiningAutoBatchDelay = 0.004
 local MiningDropWaitTimeout = 0.25
 local MiningDropPollDelay = 0.02
@@ -730,6 +734,9 @@ local MiningAttackResultDelay = 0.08
 local MiningTeleportRefreshDistance = 12
 local MiningOreSpotLoadDelay = 4
 local MiningOreSpotLoadCooldown = 20
+local MiningTargetRefreshTimeout = 1.2
+local MiningTargetRefreshPollDelay = 0.05
+local MiningUnequipStopDelay = 0.85
 local MiningBaseDropHeight = 1.75
 local MiningDropSpacing = 5
 local MiningDropMaxColumns = 7
@@ -1745,6 +1752,89 @@ local function moveGrabPartFast(part, destination, repeats, delay, liftHeight)
     return moved
 end
 
+local function setCharacterAt(position)
+    local root = getRoot()
+
+    if not root or not position then
+        return false
+    end
+
+    root.CFrame = CFrame.new(position + Vector3.new(0, MiningTeleportOffset, 0))
+    root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+    root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+    return true
+end
+
+local function setGrabPartAt(part, position)
+    pcall(function()
+        part.CFrame = CFrame.new(position)
+        part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+    end)
+end
+
+local function moveGrabPartToBaseRouted(part, destination)
+    if not part or not part.Parent or not destination then
+        return false
+    end
+
+    local startPosition = getPosition(part)
+
+    if not startPosition then
+        return false
+    end
+
+    local liftY = math.max(startPosition.Y, destination.Y) + MiningAutoLiftHeight
+    local liftedStart = Vector3.new(startPosition.X, liftY, startPosition.Z)
+    local liftedDestination = Vector3.new(destination.X, liftY, destination.Z)
+    local route = {
+        liftedStart,
+        liftedDestination,
+        destination,
+    }
+    local moved = false
+    local current = startPosition
+
+    setCharacterAt(startPosition)
+    moved = callGrabHandler(part, "Grab", startPosition) or moved
+    task.wait(MiningAutoRouteDelay)
+
+    for _, waypoint in ipairs(route) do
+        local distance = (waypoint - current).Magnitude
+        local steps = math.max(2, math.ceil(distance / MiningAutoRouteStepDistance))
+
+        for i = 1, steps do
+            if not part.Parent then
+                break
+            end
+
+            local position = current:Lerp(waypoint, i / steps)
+
+            setCharacterAt(position)
+            setGrabPartAt(part, position)
+            moved = callGrabHandler(part, "Grab", position) or moved
+            task.wait(MiningAutoRouteDelay)
+        end
+
+        current = waypoint
+    end
+
+    for _ = 1, MiningAutoRouteFinalRepeats do
+        if not part.Parent then
+            break
+        end
+
+        setCharacterAt(destination)
+        setGrabPartAt(part, destination)
+        moved = callGrabHandler(part, "Grab", destination) or moved
+        task.wait(MiningAutoRouteDelay)
+    end
+
+    callGrabHandler(part, "Ungrab")
+    task.wait(MiningDropSettleDelay)
+    return moved
+end
+
 local function moveDroppedOresToBase(origin)
     if not GrabHandlerRemote then
         miningWarn("GrabHandler remote was not found.")
@@ -1763,7 +1853,7 @@ local function moveDroppedOresToBase(origin)
     for _, part in ipairs(waitForDroppedOreParts(origin)) do
         local partDestination = getPlotDropPosition(moved + 1, part)
 
-        if partDestination and moveGrabPartFast(part, partDestination, MiningAutoGrabRepeats, MiningAutoGrabDelay, MiningAutoLiftHeight) then
+        if partDestination and moveGrabPartToBaseRouted(part, partDestination) then
             moved = moved + 1
 
             if moved % 10 == 0 then
@@ -1984,6 +2074,30 @@ local function refreshOreEntry(entry)
     return false
 end
 
+local function waitForOreEntry(entry, timeout)
+    timeout = timeout or 0
+
+    local startedAt = os.clock()
+
+    repeat
+        if refreshOreEntry(entry) then
+            return true
+        end
+
+        if not entry or not entry.Ore or entry.Ore.Parent ~= getOresFolder() then
+            return false
+        end
+
+        if timeout <= 0 then
+            return false
+        end
+
+        task.wait(MiningTargetRefreshPollDelay)
+    until os.clock() - startedAt >= timeout
+
+    return refreshOreEntry(entry)
+end
+
 local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
     if not refreshOreEntry(entry) then
         return false
@@ -1994,10 +2108,10 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
         return false
     end
 
-    local unequipped = false
+    local unequippedAt = nil
     local unequipConnection = nil
     local trackedPickaxe = stopOnUnequip and getEquippedPickaxe() or pickaxe
-    local maxChargeMisses = stopOnUnequip and 3 or MiningMaxChargeMisses
+    local maxChargeMisses = stopOnUnequip and MiningGetOreMaxChargeMisses or MiningMaxChargeMisses
 
     if stopOnUnequip and not trackedPickaxe then
         miningNotify("Get ore stopped: pickaxe unequipped.")
@@ -2013,7 +2127,7 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
 
     if stopOnUnequip and trackedPickaxe and trackedPickaxe:IsA("Tool") then
         unequipConnection = trackedPickaxe.Unequipped:Connect(function()
-            unequipped = true
+            unequippedAt = os.clock()
         end)
     end
 
@@ -2022,15 +2136,17 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
             return false
         end
 
-        if unequipped then
-            return true
+        local equippedPickaxe = getEquippedPickaxe()
+
+        if equippedPickaxe then
+            trackedPickaxe = equippedPickaxe
+            unequippedAt = nil
+            return false
         end
 
-        if not getEquippedPickaxe() then
-            return true
-        end
+        unequippedAt = unequippedAt or os.clock()
 
-        if trackedPickaxe and trackedPickaxe.Parent ~= getCharacter() then
+        if os.clock() - unequippedAt >= MiningUnequipStopDelay then
             return true
         end
 
@@ -2042,7 +2158,11 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
     local chargeMisses = 0
     local lastTarget = nil
 
-    while canContinueMining(stopWhenToggleOff) and hits < MiningMaxHitsPerOre and isOreAlive(entry.Ore) and refreshOreEntry(entry) do
+    while canContinueMining(stopWhenToggleOff) and hits < MiningMaxHitsPerOre and entry.Ore and entry.Ore.Parent == getOresFolder() do
+        if not waitForOreEntry(entry, hits > 0 and MiningTargetRefreshTimeout or 0) then
+            break
+        end
+
         if shouldStopForUnequip() then
             miningNotify("Get ore stopped: pickaxe unequipped.")
             break
