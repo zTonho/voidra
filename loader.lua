@@ -709,6 +709,9 @@ local MiningActionDelay = 0.2
 local MiningTeleportOffset = 5
 local MiningIdleDelay = 1
 local MiningMaxHitsPerOre = 60
+local MiningChargeUiTimeout = 0.8
+local MiningCooldownDelay = 1.25
+local LastMiningWarning = 0
 
 local OreNames = {
     "All",
@@ -809,6 +812,17 @@ local function miningNotify(description)
     })
 end
 
+local function miningWarn(description)
+    local now = os.clock()
+
+    if now - LastMiningWarning < 3 then
+        return
+    end
+
+    LastMiningWarning = now
+    miningNotify(description)
+end
+
 local function getCharacter()
     return LocalPlayer.Character
 end
@@ -826,6 +840,92 @@ end
 local function getHumanoid()
     local character = getCharacter()
     return character and character:FindFirstChildOfClass("Humanoid")
+end
+
+local function getPlayerGui()
+    return LocalPlayer:FindFirstChildOfClass("PlayerGui")
+end
+
+local function isVisibleGui(object)
+    if not object:IsA("GuiObject") or not object.Visible then
+        return false
+    end
+
+    local parent = object.Parent
+    while parent and parent:IsA("GuiObject") do
+        if not parent.Visible then
+            return false
+        end
+
+        parent = parent.Parent
+    end
+
+    return true
+end
+
+local function guiText(object)
+    local ok, text = pcall(function()
+        return object.Text
+    end)
+
+    if ok and type(text) == "string" then
+        return text
+    end
+
+    return ""
+end
+
+local function isLikelyChargeGui(object)
+    if not isVisibleGui(object) then
+        return false
+    end
+
+    local value = (object.Name .. " " .. guiText(object)):lower()
+    return value:find("charge", 1, true) ~= nil
+        or value:find("power", 1, true) ~= nil
+        or value:find("strength", 1, true) ~= nil
+end
+
+local function hasTierWarningGui()
+    local playerGui = getPlayerGui()
+
+    if not playerGui then
+        return false
+    end
+
+    for _, object in ipairs(playerGui:GetDescendants()) do
+        if isVisibleGui(object) then
+            local value = (object.Name .. " " .. guiText(object)):lower()
+
+            if value:find("tier", 1, true) or value:find("too high", 1, true) then
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function waitForChargeGui()
+    local playerGui = getPlayerGui()
+
+    if not playerGui then
+        return true
+    end
+
+    local startedAt = os.clock()
+
+    while os.clock() - startedAt < MiningChargeUiTimeout do
+        for _, object in ipairs(playerGui:GetDescendants()) do
+            if isLikelyChargeGui(object) then
+                return true
+            end
+        end
+
+        task.wait(0.05)
+    end
+
+    return false
 end
 
 local function getPosition(instance)
@@ -865,13 +965,10 @@ local function getOresFolder()
 end
 
 local function getPickaxe()
-    local containers = {
-        getCharacter(),
-        LocalPlayer:FindFirstChildOfClass("Backpack"),
-        LocalPlayer,
-    }
+    local character = getCharacter()
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
 
-    for _, container in ipairs(containers) do
+    for _, container in ipairs({ LocalPlayer, character, backpack }) do
         if container then
             for _, object in ipairs(container:GetChildren()) do
                 if object.Name:lower():find("pickaxe", 1, true) then
@@ -884,23 +981,40 @@ local function getPickaxe()
     return nil
 end
 
-local function equipPickaxe()
-    local pickaxe = getPickaxe()
+local function getEquippablePickaxe()
+    local character = getCharacter()
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
 
-    if not pickaxe then
-        miningNotify("No pickaxe found.")
-        return nil
+    for _, container in ipairs({ character, backpack }) do
+        if container then
+            for _, object in ipairs(container:GetChildren()) do
+                if object:IsA("Tool") and object.Name:lower():find("pickaxe", 1, true) then
+                    return object
+                end
+            end
+        end
     end
 
+    return nil
+end
+
+local function equipPickaxe()
     local humanoid = getHumanoid()
     local character = getCharacter()
+    local tool = getEquippablePickaxe()
 
-    if humanoid and character and pickaxe:IsA("Tool") and pickaxe.Parent ~= character then
+    if humanoid and character and tool and tool.Parent ~= character then
         pcall(function()
-            humanoid:EquipTool(pickaxe)
+            humanoid:EquipTool(tool)
         end)
 
         task.wait(0.2)
+    end
+
+    local pickaxe = getPickaxe()
+    if not pickaxe then
+        miningNotify("No pickaxe found.")
+        return nil
     end
 
     return pickaxe
@@ -965,6 +1079,10 @@ local function findOreTarget(ore)
     return nil
 end
 
+local function isOreAlive(ore)
+    return ore and ore.Parent == getOresFolder() and findOreTarget(ore) ~= nil
+end
+
 local function collectTargetsFromOre(targets, ore)
     local target = findOreTarget(ore)
 
@@ -1022,6 +1140,11 @@ local function getOreTargets(oreFilter)
     end
 
     return targets
+end
+
+local function getNearestOreTarget(oreFilter)
+    local targets = getOreTargets(oreFilter)
+    return targets[1]
 end
 
 local function teleportNear(position)
@@ -1086,7 +1209,7 @@ local function mineTarget(entry, stopWhenToggleOff)
 
     local hits = 0
 
-    while canContinueMining(stopWhenToggleOff) and hits < MiningMaxHitsPerOre and refreshOreEntry(entry) do
+    while canContinueMining(stopWhenToggleOff) and hits < MiningMaxHitsPerOre and isOreAlive(entry.Ore) and refreshOreEntry(entry) do
         teleportNear(entry.HitPosition)
         task.wait(0.1)
 
@@ -1095,6 +1218,12 @@ local function mineTarget(entry, stopWhenToggleOff)
             HitPosition = entry.HitPosition,
         })
 
+        if not waitForChargeGui() then
+            miningWarn("Charge did not start. Pickaxe may be on cooldown.")
+            task.wait(MiningCooldownDelay)
+            break
+        end
+
         task.wait(MiningChargeTime)
 
         AttackRemote:FireServer({
@@ -1102,34 +1231,45 @@ local function mineTarget(entry, stopWhenToggleOff)
             ResponseTime = MiningChargeTime,
         })
 
+        task.wait(0.15)
+
+        if hasTierWarningGui() then
+            miningWarn("Pickaxe tier is not valid for this ore.")
+            break
+        end
+
         hits = hits + 1
         task.wait(MiningActionDelay)
     end
 
     setToolInput(false, pickaxe)
-    return hits > 0
+
+    if hits >= MiningMaxHitsPerOre and isOreAlive(entry.Ore) then
+        miningNotify("Skipped ore: pickaxe tier may be too low.")
+    end
+
+    return hits > 0 and not isOreAlive(entry.Ore)
 end
 
 local function mineRoute(stopWhenToggleOff)
-    local targets = getOreTargets(MiningState.SelectedOre)
+    local entry = getNearestOreTarget(MiningState.SelectedOre)
 
-    if #targets == 0 then
+    if not entry then
         miningNotify("No ore target found.")
         return false
     end
 
     local minedAny = false
 
-    for _, entry in ipairs(targets) do
-        if MiningState.StopRequested then
+    while entry and canContinueMining(stopWhenToggleOff) do
+        local mined = mineTarget(entry, stopWhenToggleOff)
+        minedAny = mined or minedAny
+
+        if not mined then
             break
         end
 
-        if stopWhenToggleOff and Toggles.MiningAutoFarm and not Toggles.MiningAutoFarm.Value then
-            break
-        end
-
-        minedAny = mineTarget(entry, stopWhenToggleOff) or minedAny
+        entry = getNearestOreTarget(MiningState.SelectedOre)
     end
 
     return minedAny
