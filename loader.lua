@@ -729,14 +729,14 @@ local MiningAutoRouteDelay = 0.012
 local MiningAutoRouteFinalRepeats = 4
 local MiningAutoBatchDelay = 0.004
 local MiningBagCapacity = 5
-local MiningBagStoreDelay = 0.025
-local MiningBagStorePositionDelay = 0.035
-local MiningBagStoreConfirmTimeout = 0.18
+local MiningBagStoreDelay = 0.04
+local MiningBagStorePositionDelay = 0.055
+local MiningBagStoreConfirmTimeout = 0.24
 local MiningBagStoreConfirmPollDelay = 0.025
 local MiningBagDropDelay = 0.09
 local MiningBagStoreHeight = 3
 local MiningBagCollectionPasses = 12
-local MiningBagCollectionPassDelay = 0.06
+local MiningBagCollectionPassDelay = 0.1
 local MiningBagDropExtraCalls = 6
 local MiningBagFinalDropCalls = 4
 local MiningBagReturnDelay = 0.08
@@ -2160,21 +2160,22 @@ local function moveDroppedOresToBase(origin)
         return 0
     end
 
+    MiningState.BagStoredCount = MiningState.BagStoredCount or 0
+
     local playerAction = getPlayerActionRemote(0.75)
     local bagAction = getEquippedItemBagAction()
-    local storedInBag = 0
     local storeAttempts = 0
     local storedParts = {}
 
     local function flushItemBag()
-        if storedInBag <= 0 then
+        if MiningState.BagStoredCount < MiningBagCapacity then
             return
         end
 
         local nextSlot = moved + 1
-        moved = moved + dropItemBagAtBase(nextSlot, storedInBag)
+        moved = moved + dropItemBagAtBase(nextSlot, MiningBagCapacity)
         clearItemBagAtBase(moved + 1)
-        storedInBag = 0
+        MiningState.BagStoredCount = 0
         task.wait(MiningAutoBatchDelay)
 
         if origin then
@@ -2193,10 +2194,10 @@ local function moveDroppedOresToBase(origin)
 
                 if storePartInItemBag(part, playerAction, bagAction) then
                     storedParts[part] = true
-                    storedInBag = storedInBag + 1
+                    MiningState.BagStoredCount = MiningState.BagStoredCount + 1
                     storedThisPass = storedThisPass + 1
 
-                    if storedInBag >= MiningBagCapacity then
+                    if MiningState.BagStoredCount >= MiningBagCapacity then
                         flushItemBag()
                     end
                 end
@@ -2210,10 +2211,12 @@ local function moveDroppedOresToBase(origin)
         task.wait(MiningBagCollectionPassDelay)
     end
 
-    flushItemBag()
-
     if storeAttempts > 0 and moved <= 0 then
-        miningWarn("Item Bag did not store any ore.")
+        if MiningState.BagStoredCount > 0 then
+            miningNotify(("Item Bag stored %d/%d ores."):format(MiningState.BagStoredCount, MiningBagCapacity))
+        else
+            miningWarn("Item Bag did not store any ore.")
+        end
     end
 
     local standPosition = getPlotStandPosition()
