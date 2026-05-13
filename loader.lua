@@ -705,13 +705,13 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 local MiningState = State.Mining
 local MiningChargeTime = 0.63
-local MiningActionDelay = 0.005
+local MiningActionDelay = 0.015
 local MiningTeleportOffset = 5
 local MiningIdleDelay = 0.35
-local MiningMaxHitsPerOre = 6000
-local MiningChargeUiTimeout = 0.16
-local MiningChargeUiPollDelay = 0.005
-local MiningCooldownDelay = 0.15
+local MiningMaxHitsPerOre = 3600
+local MiningChargeUiTimeout = 0.3
+local MiningChargeUiPollDelay = 0.015
+local MiningCooldownDelay = 0.25
 local MiningGetOreMaxChargeMisses = 8
 local MiningDropScanRadius = 14
 local MiningGrabSteps = 8
@@ -737,11 +737,11 @@ local MiningGrabReleaseRepeats = 6
 local MiningGrabReleaseDelay = 0.04
 local MiningDropWaitTimeout = 0.25
 local MiningDropPollDelay = 0.02
-local MiningTargetSettleDelay = 0.005
-local MiningAttackResultDelay = 0.01
-local MiningAttackBurstCount = 12
-local MiningAttackBurstDelay = 0.002
-local MiningAttackBurstYieldEvery = 4
+local MiningTargetSettleDelay = 0.02
+local MiningAttackResultDelay = 0.025
+local MiningAttackBurstCount = 5
+local MiningAttackBurstDelay = 0.025
+local MiningAttackBurstYieldEvery = 1
 local MiningTeleportRefreshDistance = 12
 local MiningOreSpotLoadDelay = 4
 local MiningOreSpotLoadCooldown = 20
@@ -2496,12 +2496,16 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
                     break
                 end
 
-                AttackRemote:FireServer({
-                    Alpha = 1,
-                    ResponseTime = MiningChargeTime,
-                })
+                local attacked = pcall(function()
+                    AttackRemote:FireServer({
+                        Alpha = 1,
+                        ResponseTime = MiningChargeTime,
+                    })
+                end)
 
-                attacksFired = attacksFired + 1
+                if attacked then
+                    attacksFired = attacksFired + 1
+                end
 
                 if MiningAttackBurstDelay > 0 then
                     task.wait(MiningAttackBurstDelay)
