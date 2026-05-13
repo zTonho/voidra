@@ -139,7 +139,7 @@ local Tabs = {
 local State = {
     Loaded = true,
     Mining = {
-        SelectedOre = "All",
+        SelectedOre = "Copper",
         AutoFarm = false,
         StopRequested = false,
     },
@@ -711,10 +711,13 @@ local MiningIdleDelay = 1
 local MiningMaxHitsPerOre = 60
 local MiningChargeUiTimeout = 0.8
 local MiningCooldownDelay = 1.25
+local MiningDropScanRadius = 45
+local MiningGrabSteps = 14
+local MiningGrabStepDelay = 0.035
+local MiningBaseDropHeight = 6
 local LastMiningWarning = 0
 
 local OreNames = {
-    "All",
     "Abyssalite",
     "Amber",
     "Ancient Rune",
@@ -784,12 +787,13 @@ local OreLookup = {}
 for _, oreName in ipairs(OreNames) do
     OreLookup[oreName] = true
 end
-OreLookup.All = nil
 
 local EventsFolder = ReplicatedStorage:WaitForChild("Events", 10)
 if not EventsFolder then
     error("ReplicatedStorage.Events was not found.")
 end
+
+local GrabHandlerRemote = EventsFolder:FindFirstChild("GrabHandler")
 
 local ToolEvents = EventsFolder:WaitForChild("Tools", 10)
 if not ToolEvents then
@@ -949,6 +953,67 @@ local function getPosition(instance)
 
     local part = instance:FindFirstChildWhichIsA("BasePart", true)
     return part and part.Position or nil
+end
+
+local function ownerMatchesLocalPlayer(owner)
+    if not owner then
+        return false
+    end
+
+    if owner:IsA("ObjectValue") then
+        return owner.Value == LocalPlayer
+            or (owner.Value and owner.Value.Name == LocalPlayer.Name)
+    end
+
+    if owner:IsA("StringValue") then
+        return owner.Value == LocalPlayer.Name
+            or owner.Value == tostring(LocalPlayer.UserId)
+    end
+
+    if owner:IsA("IntValue") or owner:IsA("NumberValue") then
+        return owner.Value == LocalPlayer.UserId
+    end
+
+    if owner:IsA("BoolValue") then
+        return owner.Value == true and owner.Name == LocalPlayer.Name
+    end
+
+    return owner:GetAttribute("UserId") == LocalPlayer.UserId
+        or owner:GetAttribute("Owner") == LocalPlayer.Name
+end
+
+local function getLocalPlot()
+    local plots = workspace:FindFirstChild("Plots")
+
+    if not plots then
+        return nil
+    end
+
+    for _, plot in ipairs(plots:GetChildren()) do
+        local owner = plot:FindFirstChild("Owner", true)
+
+        if ownerMatchesLocalPlayer(owner) then
+            return plot
+        end
+    end
+
+    return nil
+end
+
+local function getPlotDropPosition()
+    local plot = getLocalPlot()
+
+    if not plot then
+        return nil
+    end
+
+    local target = plot:FindFirstChild("Plot")
+        or plot:FindFirstChild("ProjectionZone")
+        or plot:FindFirstChild("Objects")
+        or plot
+
+    local position = getPosition(target)
+    return position and (position + Vector3.new(0, MiningBaseDropHeight, 0)) or nil
 end
 
 local function getOresFolder()
@@ -1123,7 +1188,7 @@ local function getOreTargets(oreFilter)
     for _, ore in ipairs(oresFolder:GetChildren()) do
         local oreName = normalizeOreName(ore.Name)
 
-        if oreName and (oreFilter == "All" or oreName == oreFilter) then
+        if oreName and oreName == oreFilter then
             collectTargetsFromOre(targets, ore)
         end
     end
@@ -1145,6 +1210,136 @@ end
 local function getNearestOreTarget(oreFilter)
     local targets = getOreTargets(oreFilter)
     return targets[1]
+end
+
+local function getGrabPart(object)
+    if not object then
+        return nil
+    end
+
+    if object:IsA("BasePart") then
+        if object.Parent and object.Parent.Name == "MaterialPart" then
+            return object
+        end
+
+        return nil
+    end
+
+    if object.Name == "MaterialPart" then
+        return object:FindFirstChild("Part") or object:FindFirstChildWhichIsA("BasePart", true)
+    end
+
+    return nil
+end
+
+local function getDroppedOreParts(origin)
+    local grabFolder = workspace:FindFirstChild("Grab")
+    local parts = {}
+    local seen = {}
+
+    if not grabFolder then
+        return parts
+    end
+
+    for _, object in ipairs(grabFolder:GetDescendants()) do
+        local part = getGrabPart(object)
+
+        if part and part.Parent and not seen[part] then
+            local position = getPosition(part)
+
+            if position and (not origin or (position - origin).Magnitude <= MiningDropScanRadius) then
+                seen[part] = true
+                parts[#parts + 1] = part
+            end
+        end
+    end
+
+    if origin then
+        table.sort(parts, function(a, b)
+            return (a.Position - origin).Magnitude < (b.Position - origin).Magnitude
+        end)
+    end
+
+    return parts
+end
+
+local function callGrabHandler(part, action, position)
+    if not GrabHandlerRemote or not part or not part.Parent then
+        return false
+    end
+
+    local ok = pcall(function()
+        if GrabHandlerRemote:IsA("RemoteFunction") then
+            if position then
+                GrabHandlerRemote:InvokeServer(part, action, position)
+            else
+                GrabHandlerRemote:InvokeServer(part, action)
+            end
+        else
+            if position then
+                GrabHandlerRemote:FireServer(part, action, position)
+            else
+                GrabHandlerRemote:FireServer(part, action)
+            end
+        end
+    end)
+
+    return ok
+end
+
+local function moveGrabPartToBase(part, destination)
+    if not part or not part.Parent or not destination then
+        return false
+    end
+
+    local startPosition = getPosition(part)
+
+    if not startPosition then
+        return false
+    end
+
+    local moved = false
+
+    for i = 1, MiningGrabSteps do
+        if not part.Parent then
+            break
+        end
+
+        local alpha = i / MiningGrabSteps
+        local position = startPosition:Lerp(destination, alpha)
+
+        moved = callGrabHandler(part, "Grab", position) or moved
+        task.wait(MiningGrabStepDelay)
+    end
+
+    callGrabHandler(part, "Ungrab")
+    return moved
+end
+
+local function moveDroppedOresToBase(origin)
+    if not GrabHandlerRemote then
+        miningWarn("GrabHandler remote was not found.")
+        return 0
+    end
+
+    local destination = getPlotDropPosition()
+
+    if not destination then
+        miningWarn("Your plot was not found.")
+        return 0
+    end
+
+    task.wait(0.35)
+
+    local moved = 0
+
+    for _, part in ipairs(getDroppedOreParts(origin)) do
+        if moveGrabPartToBase(part, destination + Vector3.new(0, moved * 0.25, 0)) then
+            moved = moved + 1
+        end
+    end
+
+    return moved
 end
 
 local function teleportNear(position)
@@ -1208,9 +1403,11 @@ local function mineTarget(entry, stopWhenToggleOff)
     setToolInput(true, pickaxe)
 
     local hits = 0
+    local dropOrigin = entry.HitPosition
 
     while canContinueMining(stopWhenToggleOff) and hits < MiningMaxHitsPerOre and isOreAlive(entry.Ore) and refreshOreEntry(entry) do
         teleportNear(entry.HitPosition)
+        dropOrigin = entry.HitPosition
         task.wait(0.1)
 
         ChargeRemote:FireServer({
@@ -1248,10 +1445,10 @@ local function mineTarget(entry, stopWhenToggleOff)
         miningNotify("Skipped ore: pickaxe tier may be too low.")
     end
 
-    return hits > 0 and not isOreAlive(entry.Ore)
+    return hits > 0 and not isOreAlive(entry.Ore), dropOrigin
 end
 
-local function mineRoute(stopWhenToggleOff)
+local function mineOneOre(stopWhenToggleOff)
     local entry = getNearestOreTarget(MiningState.SelectedOre)
 
     if not entry then
@@ -1259,20 +1456,14 @@ local function mineRoute(stopWhenToggleOff)
         return false
     end
 
-    local minedAny = false
+    local mined, dropOrigin = mineTarget(entry, stopWhenToggleOff)
 
-    while entry and canContinueMining(stopWhenToggleOff) do
-        local mined = mineTarget(entry, stopWhenToggleOff)
-        minedAny = mined or minedAny
-
-        if not mined then
-            break
-        end
-
-        entry = getNearestOreTarget(MiningState.SelectedOre)
+    if mined then
+        moveDroppedOresToBase(dropOrigin)
+        miningNotify("Ore collected successfully.")
     end
 
-    return minedAny
+    return mined
 end
 
 local MiningBox = Tabs.Mining:AddLeftGroupbox("Autofarm", "pickaxe")
@@ -1280,16 +1471,29 @@ local MiningBox = Tabs.Mining:AddLeftGroupbox("Autofarm", "pickaxe")
 MiningBox:AddDropdown("MiningOreFilter", {
     Text = "Ore",
     Values = OreNames,
-    Default = "All",
+    Default = "Copper",
     Searchable = true,
 })
 
 MiningBox:AddButton({
-    Text = "Mine route once",
+    Text = "Get ore",
     Func = function()
         task.spawn(function()
             MiningState.StopRequested = false
-            mineRoute(false)
+            mineOneOre(false)
+        end)
+    end,
+})
+
+MiningBox:AddButton({
+    Text = "Send drops to base",
+    Func = function()
+        task.spawn(function()
+            local moved = moveDroppedOresToBase(nil)
+
+            if moved > 0 then
+                miningNotify("Ore collected successfully.")
+            end
         end)
     end,
 })
@@ -1299,19 +1503,8 @@ MiningBox:AddToggle("MiningAutoFarm", {
     Default = false,
 })
 
-MiningBox:AddButton({
-    Text = "Stop",
-    Func = function()
-        MiningState.StopRequested = true
-
-        if Toggles.MiningAutoFarm then
-            Toggles.MiningAutoFarm:SetValue(false)
-        end
-    end,
-})
-
 Options.MiningOreFilter:OnChanged(function(value)
-    MiningState.SelectedOre = value or "All"
+    MiningState.SelectedOre = value or "Copper"
 end)
 
 local miningLoopRunning = false
@@ -1328,7 +1521,7 @@ Toggles.MiningAutoFarm:OnChanged(function(enabled)
 
     task.spawn(function()
         while Toggles.MiningAutoFarm and Toggles.MiningAutoFarm.Value and not MiningState.StopRequested do
-            local mined = mineRoute(true)
+            local mined = mineOneOre(true)
 
             if not mined then
                 task.wait(MiningIdleDelay)
