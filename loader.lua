@@ -731,6 +731,8 @@ local MiningAutoBatchDelay = 0.004
 local MiningBagCapacity = 5
 local MiningBagStoreDelay = 0.025
 local MiningBagStorePositionDelay = 0.035
+local MiningBagStoreConfirmTimeout = 0.18
+local MiningBagStoreConfirmPollDelay = 0.025
 local MiningBagDropDelay = 0.09
 local MiningBagStoreHeight = 3
 local MiningBagCollectionPasses = 12
@@ -1965,6 +1967,20 @@ local function isDroppedPartActive(part)
         and container:IsDescendantOf(workspace)
 end
 
+local function waitForItemBagStore(part)
+    local startedAt = os.clock()
+
+    repeat
+        if not isDroppedPartActive(part) then
+            return true
+        end
+
+        task.wait(MiningBagStoreConfirmPollDelay)
+    until os.clock() - startedAt >= MiningBagStoreConfirmTimeout
+
+    return not isDroppedPartActive(part)
+end
+
 local function storePartInItemBag(part, playerAction, bagAction)
     if not part or not part.Parent then
         return false
@@ -2002,7 +2018,7 @@ local function storePartInItemBag(part, playerAction, bagAction)
     end
 
     task.wait(MiningBagStoreDelay)
-    return true
+    return waitForItemBagStore(part)
 end
 
 local function dropItemBagAtBase(startSlot, amount)
