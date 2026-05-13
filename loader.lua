@@ -705,10 +705,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 local MiningState = State.Mining
 local MiningChargeTime = 0.63
-local MiningActionDelay = 0.01
+local MiningActionDelay = 0.005
 local MiningTeleportOffset = 5
 local MiningIdleDelay = 0.35
-local MiningMaxHitsPerOre = 140
+local MiningMaxHitsPerOre = 420
 local MiningChargeUiTimeout = 0.5
 local MiningCooldownDelay = 0.65
 local MiningGetOreMaxChargeMisses = 8
@@ -736,10 +736,10 @@ local MiningGrabReleaseRepeats = 6
 local MiningGrabReleaseDelay = 0.04
 local MiningDropWaitTimeout = 0.25
 local MiningDropPollDelay = 0.02
-local MiningTargetSettleDelay = 0.03
-local MiningAttackResultDelay = 0.02
-local MiningAttackBurstCount = 7
-local MiningAttackBurstDelay = 0.01
+local MiningTargetSettleDelay = 0.01
+local MiningAttackResultDelay = 0.005
+local MiningAttackBurstCount = 12
+local MiningAttackBurstDelay = 0.003
 local MiningTeleportRefreshDistance = 12
 local MiningOreSpotLoadDelay = 4
 local MiningOreSpotLoadCooldown = 20
@@ -752,9 +752,6 @@ local MiningDropMaxColumns = 7
 local MiningPlotInset = 5
 local MiningBringRadius = 18
 local MiningSellDropSpacing = 4
-local MiningTierWarningScanRadius = 45
-local MiningTierWarningConfirmations = 5
-local MiningGetOreTierWarningConfirmations = 10
 local MiningMaxChargeMisses = 20
 local LastMiningWarning = 0
 local LastMiningOreSpotLoad = {}
@@ -979,9 +976,7 @@ end
 local function isTierWarningText(value)
     value = tostring(value):lower()
 
-    return value:find("too sturdy", 1, true) ~= nil
-        or value:find("sturdy", 1, true) ~= nil
-        or value:find("too high", 1, true) ~= nil
+    return value:find("too high", 1, true) ~= nil
         or value:find("too weak", 1, true) ~= nil
         or (
             value:find("tier", 1, true) ~= nil
@@ -1475,6 +1470,119 @@ local function normalizeOreName(name)
     return nil
 end
 
+local function getNumericValue(object)
+    if not object then
+        return nil
+    end
+
+    local ok, value = pcall(function()
+        return object.Value
+    end)
+
+    if ok then
+        return tonumber(value)
+    end
+
+    return nil
+end
+
+local function findNumericConfigValue(object, valueName)
+    if not object then
+        return nil
+    end
+
+    local config = object:FindFirstChild("Configuration")
+        or object:FindFirstChild("Configuration", true)
+
+    if not config then
+        return nil
+    end
+
+    local wanted = valueName:lower()
+    local direct = config:FindFirstChild(valueName)
+
+    if direct then
+        local value = getNumericValue(direct)
+
+        if value then
+            return value
+        end
+    end
+
+    for _, descendant in ipairs(config:GetDescendants()) do
+        if descendant.Name:lower() == wanted then
+            local value = getNumericValue(descendant)
+
+            if value then
+                return value
+            end
+        end
+    end
+
+    return nil
+end
+
+local function findContentTemplate(folderName, objectName)
+    local content = ReplicatedStorage:FindFirstChild("Content")
+    local folder = content and content:FindFirstChild(folderName)
+
+    if not folder or not objectName then
+        return nil
+    end
+
+    local exact = folder:FindFirstChild(objectName)
+
+    if exact then
+        return exact
+    end
+
+    local lowered = tostring(objectName):lower()
+
+    for _, child in ipairs(folder:GetChildren()) do
+        if child.Name:lower() == lowered then
+            return child
+        end
+    end
+
+    return nil
+end
+
+local function getOreTier(ore)
+    local tier = findNumericConfigValue(ore, "Tier")
+
+    if tier then
+        return tier
+    end
+
+    local oreName = ore and (normalizeOreName(ore.Name) or ore.Name)
+    local template = findContentTemplate("Ores", oreName)
+
+    return findNumericConfigValue(template, "Tier")
+end
+
+local function getPickaxeTier(pickaxe)
+    local tier = findNumericConfigValue(pickaxe, "Tier")
+
+    if tier then
+        return tier
+    end
+
+    local template = pickaxe and findContentTemplate("Tools", pickaxe.Name)
+
+    return findNumericConfigValue(template, "Tier")
+end
+
+local function canPickaxeMineOre(pickaxe, ore)
+    local pickaxeTier = getPickaxeTier(pickaxe)
+    local oreTier = getOreTier(ore)
+
+    if pickaxeTier and oreTier and pickaxeTier < oreTier then
+        return false, pickaxeTier, oreTier
+    end
+
+    return true, pickaxeTier, oreTier
+end
+
 local function getOreTargets(oreFilter)
     local oresFolder = getOresFolder()
     local targets = {
@@ -1810,8 +1918,8 @@ local function setGrabPartAt(part, position)
     end)
 end
 
-local function getPlayerActionRemote()
-    return LocalPlayer:FindFirstChild("Action") or LocalPlayer:WaitForChild("Action", 2)
+local function getPlayerActionRemote(timeout)
+    return LocalPlayer:FindFirstChild("Action") or LocalPlayer:WaitForChild("Action", timeout or 2)
 end
 
 local function getItemBag()
@@ -1828,12 +1936,12 @@ local function getItemBag()
         if container then
             local bag = container:FindFirstChild("Item Bag")
 
-            if bag and (bag:IsA("Tool") or bag:FindFirstChild("Action")) then
+            if bag and (bag:IsA("Tool") or bag:FindFirstChild("Action", true)) then
                 return bag
             end
 
             for _, object in ipairs(container:GetDescendants()) do
-                if isItemBagObject(object) and (object:IsA("Tool") or object:FindFirstChild("Action")) then
+                if isItemBagObject(object) and (object:IsA("Tool") or object:FindFirstChild("Action", true)) then
                     return object
                 end
             end
@@ -1854,7 +1962,7 @@ local function equipItemBag()
         end)
 
         task.wait(0.12)
-        bag = character:FindFirstChild("Item Bag") or bag
+        bag = character:FindFirstChild("Item Bag") or character:FindFirstChild("Item Bag", true) or bag
     end
 
     return bag
@@ -1862,13 +1970,16 @@ end
 
 local function getItemBagDropRemote()
     local bag = equipItemBag()
-    local action = bag and bag:FindFirstChild("Action")
+    local action = bag and bag:FindFirstChild("Action", true)
 
     return action
 end
 
 local function canUseItemBagTransport()
-    return getPlayerActionRemote() ~= nil and getItemBagDropRemote() ~= nil
+    local bagAction = getItemBagDropRemote()
+    local playerAction = getPlayerActionRemote(1)
+
+    return bagAction ~= nil and playerAction ~= nil
 end
 
 local function isDroppedPartActive(part)
@@ -1885,7 +1996,9 @@ local function storePartInItemBag(part)
         return false
     end
 
-    local action = getPlayerActionRemote()
+    equipItemBag()
+
+    local action = getPlayerActionRemote(1)
 
     if not action then
         return false
@@ -2484,7 +2597,7 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
     setToolInput(false, pickaxe)
 
     if hits >= MiningMaxHitsPerOre and isOreAlive(entry.Ore) then
-        miningNotify("Skipped ore: pickaxe tier may be too low.")
+        miningNotify("Skipped ore: hit limit reached.")
     end
 
     return hits > 0 and not isOreAlive(entry.Ore), dropOrigin
