@@ -132,11 +132,17 @@ local Window = Library:CreateWindow({
 local Tabs = {
     Main = Window:AddTab("Main", "house"),
     Player = Window:AddTab("Player", "user"),
+    Mining = Window:AddTab("Ores", "pickaxe"),
     Settings = Window:AddTab("UI Settings", "settings"),
 }
 
 local State = {
     Loaded = true,
+    Mining = {
+        SelectedOre = "All",
+        AutoFarm = false,
+        StopRequested = false,
+    },
     Movement = {
         Coordinates = "",
         SelectedPlayer = nil,
@@ -693,6 +699,405 @@ if not MovementOk then
     })
 end
 
+local MiningOk, MiningError = pcall(function()
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
+local MiningState = State.Mining
+local MiningChargeTime = 0.63
+local MiningActionDelay = 0.2
+local MiningTeleportOffset = 5
+local MiningIdleDelay = 1
+
+local OreNames = {
+    "All",
+    "Abyssalite",
+    "Amber",
+    "Ancient Rune",
+    "Bauxite",
+    "Blastshard",
+    "Blazing Star",
+    "BlueFlower",
+    "Chocolate",
+    "Clay",
+    "Cloudnite",
+    "Coal",
+    "Cobalt",
+    "Copper",
+    "Crimson",
+    "Deepslate",
+    "Diamond",
+    "Dirt",
+    "Dumortierite",
+    "Emerald",
+    "Fallen Star",
+    "Flower Grass",
+    "Giftium",
+    "Gingerbread",
+    "Gold",
+    "Granite",
+    "Hallow",
+    "Ice",
+    "Iron",
+    "Jade",
+    "Limestone",
+    "Lithium",
+    "Magma",
+    "Marble",
+    "Meteorite",
+    "Moonstone",
+    "Mud",
+    "Mushroom",
+    "Noir",
+    "Null",
+    "Obsidian",
+    "Old Stone",
+    "Pink Diamond",
+    "Pumpkin",
+    "Quartz",
+    "Ruby",
+    "Salt",
+    "Sand",
+    "Sapphire",
+    "Scarlet",
+    "Silver",
+    "Snow",
+    "Soulstone",
+    "Sphalerite",
+    "Sulfur",
+    "Sunstone",
+    "Tall Grass",
+    "Tin",
+    "Titanium",
+    "Tolmedit",
+    "Topaz",
+    "Volcanium",
+    "Voltshard",
+    "Wildcore",
+}
+
+local EventsFolder = ReplicatedStorage:WaitForChild("Events", 10)
+if not EventsFolder then
+    error("ReplicatedStorage.Events was not found.")
+end
+
+local ToolEvents = EventsFolder:WaitForChild("Tools", 10)
+if not ToolEvents then
+    error("ReplicatedStorage.Events.Tools was not found.")
+end
+
+local ChargeRemote = ToolEvents:WaitForChild("Charge", 10)
+local AttackRemote = ToolEvents:WaitForChild("Attack", 10)
+if not ChargeRemote or not AttackRemote then
+    error("Charge or Attack remote was not found.")
+end
+
+local ToolInputChangedRemote = ToolEvents:FindFirstChild("ToolInputChanged")
+
+local function miningNotify(description)
+    Library:Notify({
+        Title = "voidra",
+        Description = description,
+        Time = 3,
+    })
+end
+
+local function getCharacter()
+    return LocalPlayer.Character
+end
+
+local function getRoot()
+    local character = getCharacter()
+    return character
+        and (
+            character:FindFirstChild("HumanoidRootPart")
+            or character.PrimaryPart
+            or character:FindFirstChildWhichIsA("BasePart")
+        )
+end
+
+local function getPosition(instance)
+    if not instance then
+        return nil
+    end
+
+    if instance:IsA("BasePart") then
+        return instance.Position
+    end
+
+    if instance:IsA("Model") then
+        local ok, pivot = pcall(function()
+            return instance:GetPivot()
+        end)
+
+        if ok then
+            return pivot.Position
+        end
+    end
+
+    local part = instance:FindFirstChildWhichIsA("BasePart", true)
+    return part and part.Position or nil
+end
+
+local function getOresFolder()
+    local worldSpawn = workspace:FindFirstChild("WorldSpawn")
+    return worldSpawn and worldSpawn:FindFirstChild("Ores") or nil
+end
+
+local function getPickaxe()
+    local containers = {
+        getCharacter(),
+        LocalPlayer:FindFirstChildOfClass("Backpack"),
+        LocalPlayer,
+    }
+
+    for _, container in ipairs(containers) do
+        if container then
+            for _, object in ipairs(container:GetChildren()) do
+                if object.Name:lower():find("pickaxe", 1, true) then
+                    return object
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function setToolInput(active)
+    if not ToolInputChangedRemote then
+        return
+    end
+
+    local pickaxe = getPickaxe()
+    if pickaxe then
+        pcall(function()
+            ToolInputChangedRemote:FireServer(pickaxe, active)
+        end)
+    end
+end
+
+local function addOreTarget(targets, ore, target)
+    local position = getPosition(target)
+
+    if not position then
+        return
+    end
+
+    targets[#targets + 1] = {
+        Ore = ore,
+        Target = target,
+        HitPosition = position,
+    }
+end
+
+local function collectTargetsFromOre(targets, ore)
+    local hittable = ore:FindFirstChild("Hittable")
+
+    if hittable then
+        local foundNamedTargets = false
+
+        for _, child in ipairs(hittable:GetChildren()) do
+            if child.Name == "Part" then
+                addOreTarget(targets, ore, child)
+                foundNamedTargets = true
+            end
+        end
+
+        if foundNamedTargets then
+            return
+        end
+
+        for _, descendant in ipairs(hittable:GetDescendants()) do
+            if descendant:IsA("BasePart") then
+                addOreTarget(targets, ore, descendant)
+                return
+            end
+        end
+    elseif ore:IsA("BasePart") then
+        addOreTarget(targets, ore, ore)
+    else
+        local part = ore:FindFirstChildWhichIsA("BasePart", true)
+        if part then
+            addOreTarget(targets, ore, part)
+        end
+    end
+end
+
+local function getOreTargets(oreFilter)
+    local oresFolder = getOresFolder()
+    local targets = {}
+
+    if not oresFolder then
+        return targets
+    end
+
+    for _, ore in ipairs(oresFolder:GetChildren()) do
+        if oreFilter == "All" or ore.Name == oreFilter then
+            collectTargetsFromOre(targets, ore)
+        end
+    end
+
+    local root = getRoot()
+    local rootPosition = root and root.Position
+
+    if rootPosition then
+        table.sort(targets, function(a, b)
+            return (a.HitPosition - rootPosition).Magnitude < (b.HitPosition - rootPosition).Magnitude
+        end)
+    end
+
+    return targets
+end
+
+local function teleportNear(position)
+    local root = getRoot()
+
+    if not root then
+        return false
+    end
+
+    root.CFrame = CFrame.new(position + Vector3.new(0, MiningTeleportOffset, 0))
+    return true
+end
+
+local function mineTarget(entry)
+    if not entry or not entry.Target or not entry.Target.Parent then
+        return false
+    end
+
+    if not teleportNear(entry.HitPosition) then
+        miningNotify("Character root was not found.")
+        return false
+    end
+
+    task.wait(0.1)
+
+    setToolInput(true)
+
+    ChargeRemote:FireServer({
+        Target = entry.Target,
+        HitPosition = entry.HitPosition,
+    })
+
+    task.wait(MiningChargeTime)
+
+    AttackRemote:FireServer({
+        Alpha = 1,
+        ResponseTime = MiningChargeTime,
+    })
+
+    setToolInput(false)
+    task.wait(MiningActionDelay)
+
+    return true
+end
+
+local function mineRoute(stopWhenToggleOff)
+    local targets = getOreTargets(MiningState.SelectedOre)
+
+    if #targets == 0 then
+        miningNotify("No ore target found.")
+        return false
+    end
+
+    local minedAny = false
+
+    for _, entry in ipairs(targets) do
+        if MiningState.StopRequested then
+            break
+        end
+
+        if stopWhenToggleOff and Toggles.MiningAutoFarm and not Toggles.MiningAutoFarm.Value then
+            break
+        end
+
+        minedAny = mineTarget(entry) or minedAny
+    end
+
+    return minedAny
+end
+
+local MiningBox = Tabs.Mining:AddLeftGroupbox("Autofarm", "pickaxe")
+
+MiningBox:AddDropdown("MiningOreFilter", {
+    Text = "Ore",
+    Values = OreNames,
+    Default = "All",
+    Searchable = true,
+})
+
+MiningBox:AddButton({
+    Text = "Mine route once",
+    Func = function()
+        task.spawn(function()
+            MiningState.StopRequested = false
+            mineRoute(false)
+        end)
+    end,
+})
+
+MiningBox:AddToggle("MiningAutoFarm", {
+    Text = "Auto farm",
+    Default = false,
+})
+
+MiningBox:AddButton({
+    Text = "Stop",
+    Func = function()
+        MiningState.StopRequested = true
+
+        if Toggles.MiningAutoFarm then
+            Toggles.MiningAutoFarm:SetValue(false)
+        end
+    end,
+})
+
+Options.MiningOreFilter:OnChanged(function(value)
+    MiningState.SelectedOre = value or "All"
+end)
+
+local miningLoopRunning = false
+
+Toggles.MiningAutoFarm:OnChanged(function(enabled)
+    MiningState.AutoFarm = enabled
+    MiningState.StopRequested = not enabled
+
+    if not enabled or miningLoopRunning then
+        return
+    end
+
+    miningLoopRunning = true
+
+    task.spawn(function()
+        while Toggles.MiningAutoFarm and Toggles.MiningAutoFarm.Value and not MiningState.StopRequested do
+            local mined = mineRoute(true)
+
+            if not mined then
+                task.wait(MiningIdleDelay)
+            end
+        end
+
+        miningLoopRunning = false
+    end)
+end)
+
+local previousCleanup = cleanup
+cleanup = function()
+    previousCleanup()
+    MiningState.StopRequested = true
+end
+end)
+
+if not MiningOk then
+    warn("[voidra] Mining setup failed: " .. tostring(MiningError))
+    Library:Notify({
+        Title = "voidra",
+        Description = "Mining setup failed. Check console.",
+        Time = 5,
+    })
+end
+
 -- Add your own game services/remotes here.
 -- local ReplicatedStorage = game:GetService("ReplicatedStorage")
 -- local Events = ReplicatedStorage:WaitForChild("Events")
@@ -713,7 +1118,7 @@ end
 if SaveManager then
     SaveManager:SetLibrary(Library)
     SaveManager:IgnoreThemeSettings()
-    SaveManager:SetIgnoreIndexes({ "MenuKeybind" })
+    SaveManager:SetIgnoreIndexes({ "MenuKeybind", "MiningAutoFarm" })
     SaveManager:SetFolder("voidra")
     SaveManager:SetSubFolder(tostring(game.PlaceId))
     SaveManager:BuildConfigSection(Tabs.Settings)
