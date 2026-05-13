@@ -145,9 +145,13 @@ local State = {
         GodHealth = 1000000,
         Connection = nil,
         HealthConnection = nil,
+        StateConnection = nil,
         Humanoid = nil,
+        ForceField = nil,
         OriginalMaxHealth = nil,
         OriginalBreakJointsOnDeath = nil,
+        OriginalRequiresNeck = nil,
+        OriginalStateEnabled = {},
     },
     Mining = {
         SelectedOre = "Copper",
@@ -715,6 +719,12 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 local MainState = State.Main
+local ProtectedHumanoidStates = {
+    Enum.HumanoidStateType.Dead,
+    Enum.HumanoidStateType.FallingDown,
+    Enum.HumanoidStateType.Ragdoll,
+    Enum.HumanoidStateType.Physics,
+}
 
 local function getCharacter()
     return LocalPlayer.Character
@@ -729,6 +739,11 @@ local function disconnectHealthWatcher()
     if MainState.HealthConnection then
         MainState.HealthConnection:Disconnect()
         MainState.HealthConnection = nil
+    end
+
+    if MainState.StateConnection then
+        MainState.StateConnection:Disconnect()
+        MainState.StateConnection = nil
     end
 end
 
@@ -746,9 +761,74 @@ local function rememberHumanoid(humanoid)
     end)
 
     MainState.OriginalBreakJointsOnDeath = ok and breakJoints or nil
+
+    local requiresNeckOk, requiresNeck = pcall(function()
+        return humanoid.RequiresNeck
+    end)
+
+    MainState.OriginalRequiresNeck = requiresNeckOk and requiresNeck or nil
+    MainState.OriginalStateEnabled = {}
+
+    for _, state in ipairs(ProtectedHumanoidStates) do
+        local stateOk, enabled = pcall(function()
+            return humanoid:GetStateEnabled(state)
+        end)
+
+        if stateOk then
+            MainState.OriginalStateEnabled[state] = enabled
+        end
+    end
+end
+
+local function ensureGodForceField(character)
+    if not character then
+        return
+    end
+
+    local forceField = MainState.ForceField
+
+    if not forceField or forceField.Parent ~= character then
+        if forceField then
+            forceField:Destroy()
+        end
+
+        forceField = Instance.new("ForceField")
+        forceField.Name = "VoidraGodmodeForceField"
+        forceField.Visible = false
+        forceField.Parent = character
+        MainState.ForceField = forceField
+    end
+end
+
+local function protectHumanoidState(humanoid)
+    pcall(function()
+        humanoid.BreakJointsOnDeath = false
+    end)
+
+    pcall(function()
+        humanoid.RequiresNeck = false
+    end)
+
+    for _, state in ipairs(ProtectedHumanoidStates) do
+        pcall(function()
+            humanoid:SetStateEnabled(state, false)
+        end)
+    end
+
+    local currentState = humanoid:GetState()
+    if currentState == Enum.HumanoidStateType.Dead
+        or currentState == Enum.HumanoidStateType.Ragdoll
+        or currentState == Enum.HumanoidStateType.FallingDown
+        or currentState == Enum.HumanoidStateType.Physics
+    then
+        pcall(function()
+            humanoid:ChangeState(Enum.HumanoidStateType.GettingUp)
+        end)
+    end
 end
 
 local function fillHumanoidHealth()
+    local character = getCharacter()
     local humanoid = getHumanoid()
 
     if not MainState.Godmode or not humanoid then
@@ -756,10 +836,8 @@ local function fillHumanoidHealth()
     end
 
     rememberHumanoid(humanoid)
-
-    pcall(function()
-        humanoid.BreakJointsOnDeath = false
-    end)
+    ensureGodForceField(character)
+    protectHumanoidState(humanoid)
 
     if humanoid.MaxHealth < MainState.GodHealth then
         humanoid.MaxHealth = MainState.GodHealth
@@ -772,6 +850,24 @@ local function fillHumanoidHealth()
     if not MainState.HealthConnection then
         MainState.HealthConnection = humanoid.HealthChanged:Connect(function()
             if MainState.Godmode and humanoid.Parent and humanoid.Health < humanoid.MaxHealth then
+                protectHumanoidState(humanoid)
+                humanoid.Health = humanoid.MaxHealth
+            end
+        end)
+    end
+
+    if not MainState.StateConnection then
+        MainState.StateConnection = humanoid.StateChanged:Connect(function(_, newState)
+            if not MainState.Godmode or not humanoid.Parent then
+                return
+            end
+
+            if newState == Enum.HumanoidStateType.Dead
+                or newState == Enum.HumanoidStateType.Ragdoll
+                or newState == Enum.HumanoidStateType.FallingDown
+                or newState == Enum.HumanoidStateType.Physics
+            then
+                protectHumanoidState(humanoid)
                 humanoid.Health = humanoid.MaxHealth
             end
         end)
@@ -782,6 +878,11 @@ local function restoreHumanoid()
     local humanoid = MainState.Humanoid
 
     disconnectHealthWatcher()
+
+    if MainState.ForceField then
+        MainState.ForceField:Destroy()
+        MainState.ForceField = nil
+    end
 
     if humanoid and humanoid.Parent then
         if MainState.OriginalMaxHealth then
@@ -794,11 +895,25 @@ local function restoreHumanoid()
                 humanoid.BreakJointsOnDeath = MainState.OriginalBreakJointsOnDeath
             end)
         end
+
+        if MainState.OriginalRequiresNeck ~= nil then
+            pcall(function()
+                humanoid.RequiresNeck = MainState.OriginalRequiresNeck
+            end)
+        end
+
+        for state, enabled in pairs(MainState.OriginalStateEnabled) do
+            pcall(function()
+                humanoid:SetStateEnabled(state, enabled)
+            end)
+        end
     end
 
     MainState.Humanoid = nil
     MainState.OriginalMaxHealth = nil
     MainState.OriginalBreakJointsOnDeath = nil
+    MainState.OriginalRequiresNeck = nil
+    MainState.OriginalStateEnabled = {}
 end
 
 local function setHumanoidGodmode(enabled)
@@ -821,7 +936,7 @@ end
 local CharacterBox = Tabs.Main:AddLeftGroupbox("Character", "shield")
 
 CharacterBox:AddToggle("MainHumanoidGodmode", {
-    Text = "Humanoid godmode",
+    Text = "Godmode",
     Default = false,
 })
 
