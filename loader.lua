@@ -713,7 +713,7 @@ local MiningChargeUiTimeout = 0.3
 local MiningChargeUiPollDelay = 0.015
 local MiningCooldownDelay = 0.25
 local MiningGetOreMaxChargeMisses = 8
-local MiningDropScanRadius = 14
+local MiningDropScanRadius = 30
 local MiningGrabSteps = 8
 local MiningGrabStepDelay = 0.015
 local MiningFinalGrabRepeats = 5
@@ -731,8 +731,12 @@ local MiningAutoBatchDelay = 0.004
 local MiningBagCapacity = 5
 local MiningBagStoreDelay = 0.04
 local MiningBagStorePositionDelay = 0.06
-local MiningBagDropDelay = 0.06
+local MiningBagDropDelay = 0.12
 local MiningBagStoreHeight = 3
+local MiningBagCollectionPasses = 12
+local MiningBagCollectionPassDelay = 0.12
+local MiningBagDropExtraCalls = 3
+local MiningBagReturnDelay = 0.16
 local MiningGrabReleaseRepeats = 6
 local MiningGrabReleaseDelay = 0.04
 local MiningDropWaitTimeout = 0.25
@@ -1925,13 +1929,28 @@ end
 
 local function getItemBagDropRemote()
     local bag = equipItemBag()
-    local action = bag and bag:FindFirstChild("Action", true)
+    local action = bag and (bag:FindFirstChild("Action") or bag:FindFirstChild("Action", true))
 
     return action
 end
 
+local function getEquippedItemBagAction()
+    local character = getCharacter()
+    local bag = character and character:FindFirstChild("Item Bag")
+
+    if not bag then
+        bag = equipItemBag()
+    end
+
+    if bag and bag.Parent ~= character then
+        bag = character and character:FindFirstChild("Item Bag") or bag
+    end
+
+    return bag and (bag:FindFirstChild("Action") or bag:FindFirstChild("Action", true)) or nil
+end
+
 local function canUseItemBagTransport()
-    local bagAction = getItemBagDropRemote()
+    local bagAction = getEquippedItemBagAction()
 
     return bagAction ~= nil
 end
@@ -1953,7 +1972,7 @@ local function storePartInItemBag(part)
     equipItemBag()
 
     local playerAction = getPlayerActionRemote(0.75)
-    local bagAction = getItemBagDropRemote()
+    local bagAction = getEquippedItemBagAction()
 
     if not playerAction and not bagAction then
         return false
@@ -1989,16 +2008,11 @@ local function dropItemBagAtBase(startSlot, amount)
         return 0
     end
 
-    local action = getItemBagDropRemote()
+    local attempts = math.max(amount, MiningBagCapacity) + MiningBagDropExtraCalls
 
-    if not action then
-        return 0
-    end
-
-    local dropped = 0
-
-    for i = 1, amount do
-        local destination = getPlotDropPosition(startSlot + i - 1)
+    for i = 1, attempts do
+        local slotOffset = (i - 1) % math.max(amount, 1)
+        local destination = getPlotDropPosition(startSlot + slotOffset)
 
         if not destination then
             break
@@ -2007,14 +2021,16 @@ local function dropItemBagAtBase(startSlot, amount)
         setCharacterExactAt(destination + Vector3.new(0, 2.5, 0))
         task.wait(MiningBagDropDelay)
 
-        if callRemote(action, "Drop") then
-            dropped = dropped + 1
+        local action = getEquippedItemBagAction()
+
+        if action then
+            callRemote(action, "Drop")
         end
 
         task.wait(MiningBagDropDelay)
     end
 
-    return dropped
+    return amount
 end
 
 local function moveGrabPartToBaseRouted(part, destination)
@@ -2097,7 +2113,6 @@ local function moveDroppedOresToBase(origin)
         return 0
     end
 
-    local parts = waitForDroppedOrePartsNearCharacter(origin)
     local useItemBag = canUseItemBagTransport()
     local moved = 0
 
@@ -2108,6 +2123,7 @@ local function moveDroppedOresToBase(origin)
 
     local storedInBag = 0
     local storeAttempts = 0
+    local storedParts = {}
 
     local function flushItemBag()
         if storedInBag <= 0 then
@@ -2117,18 +2133,38 @@ local function moveDroppedOresToBase(origin)
         moved = moved + dropItemBagAtBase(moved + 1, storedInBag)
         storedInBag = 0
         task.wait(MiningAutoBatchDelay)
+
+        if origin then
+            setCharacterExactAt(origin + Vector3.new(0, MiningBagStoreHeight, 0))
+            task.wait(MiningBagReturnDelay)
+        end
     end
 
-    for _, part in ipairs(parts) do
-        storeAttempts = storeAttempts + 1
+    for pass = 1, MiningBagCollectionPasses do
+        local parts = waitForDroppedOrePartsNearCharacter(origin)
+        local storedThisPass = 0
 
-        if storePartInItemBag(part) then
-            storedInBag = storedInBag + 1
+        for _, part in ipairs(parts) do
+            if not storedParts[part] then
+                storeAttempts = storeAttempts + 1
 
-            if storedInBag >= MiningBagCapacity then
-                flushItemBag()
+                if storePartInItemBag(part) then
+                    storedParts[part] = true
+                    storedInBag = storedInBag + 1
+                    storedThisPass = storedThisPass + 1
+
+                    if storedInBag >= MiningBagCapacity then
+                        flushItemBag()
+                    end
+                end
             end
         end
+
+        if storedThisPass == 0 and pass > 2 then
+            break
+        end
+
+        task.wait(MiningBagCollectionPassDelay)
     end
 
     flushItemBag()
