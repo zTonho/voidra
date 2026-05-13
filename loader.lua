@@ -727,6 +727,10 @@ local MiningAutoRouteStepDistance = 650
 local MiningAutoRouteDelay = 0.012
 local MiningAutoRouteFinalRepeats = 4
 local MiningAutoBatchDelay = 0.004
+local MiningBagCapacity = 5
+local MiningBagStoreDelay = 0.04
+local MiningBagStoreTimeout = 0.3
+local MiningBagDropDelay = 0.05
 local MiningDropWaitTimeout = 0.25
 local MiningDropPollDelay = 0.02
 local MiningTargetSettleDelay = 0.03
@@ -744,6 +748,8 @@ local MiningPlotInset = 5
 local MiningBringRadius = 18
 local MiningSellDropSpacing = 4
 local MiningTierWarningScanRadius = 45
+local MiningTierWarningConfirmations = 5
+local MiningGetOreTierWarningConfirmations = 10
 local MiningMaxChargeMisses = 20
 local LastMiningWarning = 0
 local LastMiningOreSpotLoad = {}
@@ -1035,10 +1041,6 @@ local function hasTierWarningInContainer(container, nearPosition)
 end
 
 local function hasTierWarningGui(nearPosition, ore)
-    if hasTierWarningInContainer(getPlayerGui(), nil) then
-        return true
-    end
-
     return ore and hasTierWarningInContainer(ore, nearPosition) or false
 end
 
@@ -1653,6 +1655,23 @@ local function callGrabHandler(part, action, position)
     return ok
 end
 
+local function callRemote(remote, ...)
+    if not remote then
+        return false
+    end
+
+    local args = { ... }
+    local ok = pcall(function()
+        if remote:IsA("RemoteFunction") then
+            remote:InvokeServer(unpack(args))
+        else
+            remote:FireServer(unpack(args))
+        end
+    end)
+
+    return ok
+end
+
 local function moveGrabPartToBase(part, destination)
     if not part or not part.Parent or not destination then
         return false
@@ -1773,6 +1792,131 @@ local function setGrabPartAt(part, position)
     end)
 end
 
+local function getPlayerActionRemote()
+    return LocalPlayer:FindFirstChild("Action") or LocalPlayer:WaitForChild("Action", 2)
+end
+
+local function getItemBag()
+    local character = getCharacter()
+    local backpack = LocalPlayer:FindFirstChildOfClass("Backpack")
+
+    for _, container in ipairs({ character, backpack, LocalPlayer }) do
+        if container then
+            local bag = container:FindFirstChild("Item Bag")
+
+            if bag then
+                return bag
+            end
+        end
+    end
+
+    return nil
+end
+
+local function equipItemBag()
+    local humanoid = getHumanoid()
+    local character = getCharacter()
+    local bag = getItemBag()
+
+    if humanoid and character and bag and bag:IsA("Tool") and bag.Parent ~= character then
+        pcall(function()
+            humanoid:EquipTool(bag)
+        end)
+
+        task.wait(0.12)
+        bag = character:FindFirstChild("Item Bag") or bag
+    end
+
+    return bag
+end
+
+local function getItemBagDropRemote()
+    local bag = equipItemBag()
+    local action = bag and bag:FindFirstChild("Action")
+
+    return action
+end
+
+local function canUseItemBagTransport()
+    return getPlayerActionRemote() ~= nil and getItemBagDropRemote() ~= nil
+end
+
+local function isDroppedPartActive(part)
+    local container = getGrabContainer(part)
+    return part
+        and part.Parent
+        and container
+        and container.Parent
+        and container:IsDescendantOf(workspace)
+end
+
+local function storePartInItemBag(part)
+    if not part or not part.Parent then
+        return false
+    end
+
+    local action = getPlayerActionRemote()
+
+    if not action then
+        return false
+    end
+
+    local position = getPosition(part)
+
+    if position then
+        setCharacterAt(position)
+        task.wait(MiningBagStoreDelay)
+    end
+
+    if not callRemote(action, "Store", part) then
+        return false
+    end
+
+    local startedAt = os.clock()
+
+    repeat
+        if not isDroppedPartActive(part) then
+            return true
+        end
+
+        task.wait(MiningBagStoreDelay)
+    until os.clock() - startedAt >= MiningBagStoreTimeout
+
+    return not isDroppedPartActive(part)
+end
+
+local function dropItemBagAtBase(startSlot, amount)
+    if amount <= 0 then
+        return 0
+    end
+
+    local action = getItemBagDropRemote()
+
+    if not action then
+        return 0
+    end
+
+    local dropped = 0
+
+    for i = 1, amount do
+        local destination = getPlotDropPosition(startSlot + i - 1)
+
+        if not destination then
+            break
+        end
+
+        setCharacterAt(destination)
+
+        if callRemote(action, "Drop") then
+            dropped = dropped + 1
+        end
+
+        task.wait(MiningBagDropDelay)
+    end
+
+    return dropped
+end
+
 local function moveGrabPartToBaseRouted(part, destination)
     if not part or not part.Parent or not destination then
         return false
@@ -1836,11 +1980,6 @@ local function moveGrabPartToBaseRouted(part, destination)
 end
 
 local function moveDroppedOresToBase(origin)
-    if not GrabHandlerRemote then
-        miningWarn("GrabHandler remote was not found.")
-        return 0
-    end
-
     local destination = getPlotDropPosition(1)
 
     if not destination then
@@ -1848,12 +1987,50 @@ local function moveDroppedOresToBase(origin)
         return 0
     end
 
+    local parts = waitForDroppedOreParts(origin)
+    local useItemBag = canUseItemBagTransport()
     local moved = 0
+    local storedInBag = 0
+    local fallbackParts = {}
 
-    for _, part in ipairs(waitForDroppedOreParts(origin)) do
+    for _, part in ipairs(parts) do
+        if useItemBag and storePartInItemBag(part) then
+            storedInBag = storedInBag + 1
+
+            if storedInBag >= MiningBagCapacity then
+                local dropped = dropItemBagAtBase(moved + 1, storedInBag)
+
+                if dropped <= 0 then
+                    miningWarn("Item Bag drop failed.")
+                end
+
+                moved = moved + dropped
+                storedInBag = 0
+                task.wait(MiningAutoBatchDelay)
+            end
+        else
+            fallbackParts[#fallbackParts + 1] = part
+        end
+    end
+
+    if storedInBag > 0 then
+        local dropped = dropItemBagAtBase(moved + 1, storedInBag)
+
+        if dropped <= 0 then
+            miningWarn("Item Bag drop failed.")
+        end
+
+        moved = moved + dropped
+    end
+
+    if #fallbackParts > 0 and not GrabHandlerRemote then
+        miningWarn("GrabHandler remote was not found.")
+    end
+
+    for _, part in ipairs(fallbackParts) do
         local partDestination = getPlotDropPosition(moved + 1, part)
 
-        if partDestination and moveGrabPartToBaseRouted(part, partDestination) then
+        if GrabHandlerRemote and partDestination and moveGrabPartToBaseRouted(part, partDestination) then
             moved = moved + 1
 
             if moved % 10 == 0 then
@@ -2112,6 +2289,7 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
     local unequipConnection = nil
     local trackedPickaxe = stopOnUnequip and getEquippedPickaxe() or pickaxe
     local maxChargeMisses = stopOnUnequip and MiningGetOreMaxChargeMisses or MiningMaxChargeMisses
+    local maxTierWarnings = stopOnUnequip and MiningGetOreTierWarningConfirmations or MiningTierWarningConfirmations
 
     if stopOnUnequip and not trackedPickaxe then
         miningNotify("Get ore stopped: pickaxe unequipped.")
@@ -2157,6 +2335,7 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
     local dropOrigin = entry.HitPosition
     local chargeMisses = 0
     local lastTarget = nil
+    local tierWarnings = 0
 
     while canContinueMining(stopWhenToggleOff) and hits < MiningMaxHitsPerOre and entry.Ore and entry.Ore.Parent == getOresFolder() do
         if not waitForOreEntry(entry, hits > 0 and MiningTargetRefreshTimeout or 0) then
@@ -2170,6 +2349,11 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
 
         local targetChanged = entry.Target ~= lastTarget
         teleportNear(entry.HitPosition, targetChanged)
+
+        if targetChanged then
+            tierWarnings = 0
+        end
+
         lastTarget = entry.Target
         dropOrigin = entry.HitPosition
         task.wait(MiningTargetSettleDelay)
@@ -2214,8 +2398,14 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
             task.wait(MiningAttackResultDelay)
 
             if hasTierWarningGui(entry.HitPosition, entry.Ore) then
-                miningNotify("Pickaxe is too weak for this ore.")
-                break
+                tierWarnings = tierWarnings + 1
+
+                if tierWarnings >= maxTierWarnings then
+                    miningNotify("Pickaxe is too weak for this ore.")
+                    break
+                end
+            else
+                tierWarnings = 0
             end
 
             hits = hits + 1
