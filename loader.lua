@@ -712,9 +712,16 @@ local MiningMaxHitsPerOre = 60
 local MiningChargeUiTimeout = 0.8
 local MiningCooldownDelay = 1.25
 local MiningDropScanRadius = 14
-local MiningGrabSteps = 4
-local MiningGrabStepDelay = 0.01
-local MiningBaseDropHeight = 6
+local MiningGrabSteps = 8
+local MiningGrabStepDelay = 0.015
+local MiningFinalGrabRepeats = 5
+local MiningDropSettleDelay = 0.12
+local MiningBaseDropHeight = 1.75
+local MiningDropSpacing = 5
+local MiningDropMaxColumns = 7
+local MiningPlotInset = 5
+local MiningBringRadius = 18
+local MiningSellDropSpacing = 4
 local MiningMaxChargeMisses = 20
 local LastMiningWarning = 0
 
@@ -902,7 +909,11 @@ local function hasTierWarningGui()
         if isVisibleGui(object) then
             local value = (object.Name .. " " .. guiText(object)):lower()
 
-            if value:find("tier", 1, true) or value:find("too high", 1, true) then
+            if value:find("tier", 1, true)
+                or value:find("too high", 1, true)
+                or value:find("too sturdy", 1, true)
+                or value:find("sturdy", 1, true)
+            then
                 return true
             end
         end
@@ -956,6 +967,68 @@ local function getPosition(instance)
     return part and part.Position or nil
 end
 
+local function getAreaData(target, fallbackSize)
+    local position = getPosition(target)
+
+    if not position then
+        return nil, nil, nil
+    end
+
+    local size = fallbackSize or Vector3.new(36, 1, 36)
+    local topY = position.Y
+
+    if target:IsA("BasePart") then
+        size = target.Size
+        topY = target.Position.Y + (target.Size.Y / 2)
+    elseif target:IsA("Model") then
+        local ok, boundsCFrame, boundsSize = pcall(function()
+            return target:GetBoundingBox()
+        end)
+
+        if ok and boundsCFrame and boundsSize then
+            position = boundsCFrame.Position
+            size = boundsSize
+            topY = boundsCFrame.Position.Y + (boundsSize.Y / 2)
+        end
+    end
+
+    return position, size, topY
+end
+
+local function getGridDropPosition(position, size, topY, slot, part, spacing, maxColumns, inset, baseHeight)
+    if not position or not size or not topY then
+        return nil
+    end
+
+    slot = math.max(1, tonumber(slot) or 1)
+    spacing = spacing or MiningDropSpacing
+    maxColumns = maxColumns or MiningDropMaxColumns
+    inset = inset or MiningPlotInset
+    baseHeight = baseHeight or MiningBaseDropHeight
+
+    local usableX = math.max(spacing, size.X - (inset * 2))
+    local usableZ = math.max(spacing, size.Z - (inset * 2))
+    local columns = math.max(1, math.floor(usableX / spacing))
+    local rows = math.max(1, math.floor(usableZ / spacing))
+
+    columns = math.min(columns, maxColumns)
+
+    local totalSlots = math.max(1, columns * rows)
+    local index = (slot - 1) % totalSlots
+    local column = index % columns
+    local row = math.floor(index / columns)
+    local dropHeight = baseHeight
+
+    if part and part:IsA("BasePart") then
+        dropHeight = math.max(dropHeight, (part.Size.Y / 2) + 0.35)
+    end
+
+    local xOffset = (column - ((columns - 1) / 2)) * spacing
+    local zOffset = (row - ((rows - 1) / 2)) * spacing
+
+    return Vector3.new(position.X + xOffset, topY + dropHeight, position.Z + zOffset)
+end
+
 local function ownerMatchesLocalPlayer(owner)
     if not owner then
         return false
@@ -1002,11 +1075,11 @@ local function getLocalPlot()
     return nil
 end
 
-local function getPlotDropPosition()
+local function getPlotDropData()
     local plot = getLocalPlot()
 
     if not plot then
-        return nil
+        return nil, nil, nil
     end
 
     local target = plot:FindFirstChild("Plot")
@@ -1014,8 +1087,114 @@ local function getPlotDropPosition()
         or plot:FindFirstChild("Objects")
         or plot
 
-    local position = getPosition(target)
-    return position and (position + Vector3.new(0, MiningBaseDropHeight, 0)) or nil
+    return getAreaData(target, Vector3.new(36, 1, 36))
+end
+
+local function getPlotDropPosition(slot, part)
+    local position, size, topY = getPlotDropData()
+
+    return getGridDropPosition(position, size, topY, slot, part)
+end
+
+local function getPlotStandPosition()
+    local position, _, topY = getPlotDropData()
+
+    if not position then
+        return nil
+    end
+
+    return Vector3.new(position.X, topY + MiningTeleportOffset, position.Z)
+end
+
+local function isInsideArea(position, areaPosition, areaSize, padding)
+    if not position or not areaPosition or not areaSize then
+        return false
+    end
+
+    padding = padding or 0
+
+    return math.abs(position.X - areaPosition.X) <= (areaSize.X / 2) + padding
+        and math.abs(position.Z - areaPosition.Z) <= (areaSize.Z / 2) + padding
+        and math.abs(position.Y - areaPosition.Y) <= math.max(120, areaSize.Y + padding)
+end
+
+local function isInsideLocalPlot(position, padding)
+    local plotPosition, plotSize = getPlotDropData()
+    return isInsideArea(position, plotPosition, plotSize, padding or 4)
+end
+
+local function getNovaSellary()
+    local map = workspace:FindFirstChild("Map")
+    local structures = map and map:FindFirstChild("Structures")
+
+    if not structures then
+        return nil
+    end
+
+    return structures:FindFirstChild("Nova_Sellary")
+        or structures:FindFirstChild("Nova_Sellary", true)
+end
+
+local function getSellZone()
+    local sellary = getNovaSellary()
+    return sellary and (sellary:FindFirstChild("SellZone") or sellary:FindFirstChild("SellZone", true)) or nil
+end
+
+local function getSellTalkPart()
+    local sellary = getNovaSellary()
+    return sellary and (sellary:FindFirstChild("TalkPart") or sellary:FindFirstChild("TalkPart", true)) or nil
+end
+
+local function getSellZoneData()
+    local sellZone = getSellZone()
+
+    if not sellZone then
+        return nil, nil, nil
+    end
+
+    local target = sellZone:IsA("Model") and sellZone.PrimaryPart or nil
+    target = target
+        or sellZone:FindFirstChild("Area", true)
+        or sellZone:FindFirstChildWhichIsA("BasePart", true)
+        or sellZone
+
+    return getAreaData(target, Vector3.new(28, 1, 28))
+end
+
+local function getSellZoneDropPosition(slot, part)
+    local position, size, topY = getSellZoneData()
+    return getGridDropPosition(position, size, topY, slot, part, MiningSellDropSpacing, 8, 2, 1.5)
+end
+
+local function getPlayerDropPosition(slot, part)
+    local root = getRoot()
+
+    if not root then
+        return nil
+    end
+
+    local center = root.Position + (root.CFrame.LookVector * 5)
+    return getGridDropPosition(center, Vector3.new(18, 1, 18), root.Position.Y - 3, slot, part, 4, 5, 1, 1.5)
+end
+
+local function callSellaryInteract(...)
+    local talkPart = getSellTalkPart()
+    local interact = talkPart and talkPart:FindFirstChild("Interact")
+    local args = { ... }
+
+    if not interact then
+        return false
+    end
+
+    local ok = pcall(function()
+        if interact:IsA("RemoteFunction") then
+            interact:InvokeServer(unpack(args))
+        else
+            interact:FireServer(unpack(args))
+        end
+    end)
+
+    return ok
 end
 
 local function getOresFolder()
@@ -1234,7 +1413,7 @@ local function getGrabPart(object)
     return nil
 end
 
-local function getDroppedOreParts(origin)
+local function getDroppedOrePartsWhere(predicate, sortPosition)
     local grabFolder = workspace:FindFirstChild("Grab")
     local parts = {}
     local seen = {}
@@ -1249,20 +1428,47 @@ local function getDroppedOreParts(origin)
         if part and part.Parent and not seen[part] then
             local position = getPosition(part)
 
-            if position and (not origin or (position - origin).Magnitude <= MiningDropScanRadius) then
+            if position and (not predicate or predicate(part, position)) then
                 seen[part] = true
                 parts[#parts + 1] = part
             end
         end
     end
 
-    if origin then
+    if sortPosition then
         table.sort(parts, function(a, b)
-            return (a.Position - origin).Magnitude < (b.Position - origin).Magnitude
+            return (a.Position - sortPosition).Magnitude < (b.Position - sortPosition).Magnitude
         end)
     end
 
     return parts
+end
+
+local function getDroppedOreParts(origin)
+    return getDroppedOrePartsWhere(function(_, position)
+        return not origin or (position - origin).Magnitude <= MiningDropScanRadius
+    end, origin)
+end
+
+local function getBaseDroppedOreParts()
+    local plotPosition = getPlotStandPosition()
+
+    return getDroppedOrePartsWhere(function(_, position)
+        return isInsideLocalPlot(position, 5)
+    end, plotPosition)
+end
+
+local function getSafePlayerDroppedOreParts()
+    local root = getRoot()
+    local rootPosition = root and root.Position
+
+    return getDroppedOrePartsWhere(function(_, position)
+        if isInsideLocalPlot(position, 5) then
+            return true
+        end
+
+        return rootPosition and (position - rootPosition).Magnitude <= MiningBringRadius
+    end, rootPosition)
 end
 
 local function callGrabHandler(part, action, position)
@@ -1320,14 +1526,24 @@ local function moveGrabPartToBase(part, destination)
         task.wait(MiningGrabStepDelay)
     end
 
-    pcall(function()
-        part.CFrame = CFrame.new(destination)
-        part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
-        part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
-    end)
+    for _ = 1, MiningFinalGrabRepeats do
+        if not part.Parent then
+            break
+        end
 
-    callGrabHandler(part, "Grab", destination)
+        pcall(function()
+            part.CFrame = CFrame.new(destination)
+            part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+        end)
+
+        moved = callGrabHandler(part, "Grab", destination) or moved
+        task.wait(MiningGrabStepDelay)
+    end
+
     callGrabHandler(part, "Ungrab")
+    task.wait(MiningDropSettleDelay)
+
     return moved
 end
 
@@ -1337,7 +1553,7 @@ local function moveDroppedOresToBase(origin)
         return 0
     end
 
-    local destination = getPlotDropPosition()
+    local destination = getPlotDropPosition(1)
 
     if not destination then
         miningWarn("Your plot was not found.")
@@ -1349,14 +1565,125 @@ local function moveDroppedOresToBase(origin)
     local moved = 0
 
     for _, part in ipairs(getDroppedOreParts(origin)) do
-        if moveGrabPartToBase(part, destination + Vector3.new(0, moved * 0.35, 0)) then
+        local partDestination = getPlotDropPosition(moved + 1, part)
+
+        if partDestination and moveGrabPartToBase(part, partDestination) then
             moved = moved + 1
+            task.wait(MiningDropSettleDelay)
         end
     end
 
+    local standPosition = getPlotStandPosition()
     local root = getRoot()
-    if root then
-        root.CFrame = CFrame.new(destination + Vector3.new(0, MiningTeleportOffset, 0))
+    if root and standPosition then
+        root.CFrame = CFrame.new(standPosition)
+    end
+
+    return moved
+end
+
+local function talkToSellary()
+    local talkPart = getSellTalkPart()
+
+    if not talkPart then
+        miningWarn("Nova Sellary talk part was not found.")
+        return false
+    end
+
+    local talkPosition = getPosition(talkPart)
+    local root = getRoot()
+
+    if root and talkPosition then
+        root.CFrame = CFrame.new(talkPosition + Vector3.new(0, 3, 0))
+        task.wait(0.2)
+    end
+
+    if not callSellaryInteract() then
+        return false
+    end
+
+    task.wait(0.35)
+    return callSellaryInteract("Deal", 1)
+end
+
+local function sellBaseOres()
+    if not GrabHandlerRemote then
+        miningWarn("GrabHandler remote was not found.")
+        return 0
+    end
+
+    if not getSellZoneDropPosition(1) then
+        miningWarn("Nova Sellary sell zone was not found.")
+        return 0
+    end
+
+    local parts = getBaseDroppedOreParts()
+
+    if #parts == 0 then
+        miningNotify("No ores found in your base.")
+        return 0
+    end
+
+    local moved = 0
+
+    for _, part in ipairs(parts) do
+        local destination = getSellZoneDropPosition(moved + 1, part)
+
+        if destination and moveGrabPartToBase(part, destination) then
+            moved = moved + 1
+            task.wait(MiningDropSettleDelay)
+        end
+    end
+
+    if moved == 0 then
+        miningNotify("No ores were moved.")
+        return 0
+    end
+
+    task.wait(0.6)
+
+    if talkToSellary() then
+        miningNotify(("Sell request sent for %d ore blocks."):format(moved))
+    else
+        miningWarn("Could not talk to Nova Sellary.")
+    end
+
+    return moved
+end
+
+local function bringSafeOresToPlayer()
+    if not GrabHandlerRemote then
+        miningWarn("GrabHandler remote was not found.")
+        return 0
+    end
+
+    if not getRoot() then
+        miningNotify("Character root was not found.")
+        return 0
+    end
+
+    local parts = getSafePlayerDroppedOreParts()
+
+    if #parts == 0 then
+        miningNotify("No safe ores found near you or in your base.")
+        return 0
+    end
+
+    local moved = 0
+
+    for _, part in ipairs(parts) do
+        local destination = getPlayerDropPosition(moved + 1, part)
+
+        if destination and moveGrabPartToBase(part, destination) then
+            moved = moved + 1
+            task.wait(MiningDropSettleDelay)
+        end
+    end
+
+    if moved > 0 then
+        miningNotify(("Brought %d ore blocks."):format(moved))
+    else
+        miningNotify("No ores were moved.")
     end
 
     return moved
@@ -1457,7 +1784,7 @@ local function mineTarget(entry, stopWhenToggleOff)
             task.wait(0.15)
 
             if hasTierWarningGui() then
-                miningWarn("Pickaxe tier is not valid for this ore.")
+                miningNotify("Pickaxe is too weak for this ore.")
                 break
             end
 
@@ -1515,6 +1842,22 @@ MiningBox:AddButton({
 MiningBox:AddToggle("MiningAutoFarm", {
     Text = "Auto farm",
     Default = false,
+})
+
+local OreStorageBox = Tabs.Mining:AddRightGroupbox("Ore storage", "package")
+
+OreStorageBox:AddButton({
+    Text = "Bring ores",
+    Func = function()
+        task.spawn(bringSafeOresToPlayer)
+    end,
+})
+
+OreStorageBox:AddButton({
+    Text = "Sell all ore",
+    Func = function()
+        task.spawn(sellBaseOres)
+    end,
 })
 
 Options.MiningOreFilter:OnChanged(function(value)
