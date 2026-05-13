@@ -709,8 +709,9 @@ local MiningActionDelay = 0.005
 local MiningTeleportOffset = 5
 local MiningIdleDelay = 0.35
 local MiningMaxHitsPerOre = 420
-local MiningChargeUiTimeout = 0.5
-local MiningCooldownDelay = 0.65
+local MiningChargeUiTimeout = 0.22
+local MiningChargeUiPollDelay = 0.01
+local MiningCooldownDelay = 0.25
 local MiningGetOreMaxChargeMisses = 8
 local MiningDropScanRadius = 14
 local MiningGrabSteps = 8
@@ -973,77 +974,6 @@ local function isLikelyChargeGui(object)
         or value:find("strength", 1, true) ~= nil
 end
 
-local function isTierWarningText(value)
-    value = tostring(value):lower()
-
-    return value:find("too high", 1, true) ~= nil
-        or value:find("too weak", 1, true) ~= nil
-        or (
-            value:find("tier", 1, true) ~= nil
-            and (
-                value:find("too", 1, true) ~= nil
-                or value:find("weak", 1, true) ~= nil
-                or value:find("high", 1, true) ~= nil
-                or value:find("low", 1, true) ~= nil
-            )
-        )
-end
-
-local function getGuiWorldPosition(object)
-    local current = object
-
-    while current and current ~= workspace and current ~= game do
-        if current:IsA("BillboardGui") or current:IsA("SurfaceGui") then
-            local adornee = current.Adornee
-            local adorneePosition = getPosition(adornee)
-
-            if adorneePosition then
-                return adorneePosition
-            end
-        end
-
-        local position = getPosition(current)
-
-        if position then
-            return position
-        end
-
-        current = current.Parent
-    end
-
-    return nil
-end
-
-local function hasTierWarningInContainer(container, nearPosition)
-    if not container then
-        return false
-    end
-
-    for _, object in ipairs(container:GetDescendants()) do
-        if isVisibleGui(object) then
-            local value = (object.Name .. " " .. guiText(object)):lower()
-
-            if isTierWarningText(value) then
-                if not nearPosition then
-                    return true
-                end
-
-                local position = getGuiWorldPosition(object)
-
-                if position and (position - nearPosition).Magnitude <= MiningTierWarningScanRadius then
-                    return true
-                end
-            end
-        end
-    end
-
-    return false
-end
-
-local function hasTierWarningGui(nearPosition, ore)
-    return ore and hasTierWarningInContainer(ore, nearPosition) or false
-end
-
 local function waitForChargeGui()
     local playerGui = getPlayerGui()
 
@@ -1060,7 +990,7 @@ local function waitForChargeGui()
             end
         end
 
-        task.wait(0.05)
+        task.wait(MiningChargeUiPollDelay)
     end
 
     return false
@@ -2457,7 +2387,15 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
     local unequipConnection = nil
     local trackedPickaxe = stopOnUnequip and getEquippedPickaxe() or pickaxe
     local maxChargeMisses = stopOnUnequip and MiningGetOreMaxChargeMisses or MiningMaxChargeMisses
-    local maxTierWarnings = stopOnUnequip and MiningGetOreTierWarningConfirmations or MiningTierWarningConfirmations
+    local canMine, pickaxeTier, oreTier = canPickaxeMineOre(pickaxe, entry.Ore)
+
+    if not canMine then
+        miningWarn(("Pickaxe tier too low. Pickaxe: %s | Ore: %s."):format(
+            tostring(pickaxeTier or "?"),
+            tostring(oreTier or "?")
+        ))
+        return false
+    end
 
     if stopOnUnequip and not trackedPickaxe then
         miningNotify("Get ore stopped: pickaxe unequipped.")
@@ -2503,7 +2441,6 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
     local dropOrigin = entry.HitPosition
     local chargeMisses = 0
     local lastTarget = nil
-    local tierWarnings = 0
 
     while canContinueMining(stopWhenToggleOff) and hits < MiningMaxHitsPerOre and entry.Ore and entry.Ore.Parent == getOresFolder() do
         if not waitForOreEntry(entry, hits > 0 and MiningTargetRefreshTimeout or 0) then
@@ -2517,10 +2454,6 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
 
         local targetChanged = entry.Target ~= lastTarget
         teleportNear(entry.HitPosition, targetChanged)
-
-        if targetChanged then
-            tierWarnings = 0
-        end
 
         lastTarget = entry.Target
         dropOrigin = entry.HitPosition
@@ -2573,17 +2506,6 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
             end
 
             task.wait(MiningAttackResultDelay)
-
-            if hasTierWarningGui(entry.HitPosition, entry.Ore) then
-                tierWarnings = tierWarnings + 1
-
-                if tierWarnings >= maxTierWarnings then
-                    miningNotify("Pickaxe is too weak for this ore.")
-                    break
-                end
-            else
-                tierWarnings = 0
-            end
 
             hits = hits + attacksFired
             task.wait(MiningActionDelay)
