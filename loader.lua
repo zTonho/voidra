@@ -716,6 +716,9 @@ local MiningGrabSteps = 8
 local MiningGrabStepDelay = 0.015
 local MiningFinalGrabRepeats = 5
 local MiningDropSettleDelay = 0.12
+local MiningFastGrabRepeats = 3
+local MiningFastGrabDelay = 0.005
+local MiningStorageBatchDelay = 0.01
 local MiningBaseDropHeight = 1.75
 local MiningDropSpacing = 5
 local MiningDropMaxColumns = 7
@@ -1413,6 +1416,31 @@ local function getGrabPart(object)
     return nil
 end
 
+local function getGrabContainer(part)
+    if not part then
+        return nil
+    end
+
+    local current = part
+
+    while current and current ~= workspace do
+        if current.Name == "MaterialPart" then
+            return current
+        end
+
+        current = current.Parent
+    end
+
+    return nil
+end
+
+local function isLocalOwnedGrabPart(part)
+    local container = getGrabContainer(part)
+    local owner = container and (container:FindFirstChild("Owner") or container:FindFirstChild("owner"))
+
+    return ownerMatchesLocalPlayer(owner)
+end
+
 local function getDroppedOrePartsWhere(predicate, sortPosition)
     local grabFolder = workspace:FindFirstChild("Grab")
     local parts = {}
@@ -1428,7 +1456,7 @@ local function getDroppedOrePartsWhere(predicate, sortPosition)
         if part and part.Parent and not seen[part] then
             local position = getPosition(part)
 
-            if position and (not predicate or predicate(part, position)) then
+            if position and isLocalOwnedGrabPart(part) and (not predicate or predicate(part, position)) then
                 seen[part] = true
                 parts[#parts + 1] = part
             end
@@ -1547,6 +1575,39 @@ local function moveGrabPartToBase(part, destination)
     return moved
 end
 
+local function moveGrabPartFast(part, destination)
+    if not part or not part.Parent or not destination then
+        return false
+    end
+
+    local startPosition = getPosition(part)
+
+    if not startPosition then
+        return false
+    end
+
+    local moved = callGrabHandler(part, "Grab", startPosition)
+    task.wait(MiningFastGrabDelay)
+
+    for _ = 1, MiningFastGrabRepeats do
+        if not part.Parent then
+            break
+        end
+
+        pcall(function()
+            part.CFrame = CFrame.new(destination)
+            part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+        end)
+
+        moved = callGrabHandler(part, "Grab", destination) or moved
+        task.wait(MiningFastGrabDelay)
+    end
+
+    callGrabHandler(part, "Ungrab")
+    return moved
+end
+
 local function moveDroppedOresToBase(origin)
     if not GrabHandlerRemote then
         miningWarn("GrabHandler remote was not found.")
@@ -1583,26 +1644,16 @@ local function moveDroppedOresToBase(origin)
 end
 
 local function talkToSellary()
-    local talkPart = getSellTalkPart()
-
-    if not talkPart then
+    if not getSellTalkPart() then
         miningWarn("Nova Sellary talk part was not found.")
         return false
-    end
-
-    local talkPosition = getPosition(talkPart)
-    local root = getRoot()
-
-    if root and talkPosition then
-        root.CFrame = CFrame.new(talkPosition + Vector3.new(0, 3, 0))
-        task.wait(0.2)
     end
 
     if not callSellaryInteract() then
         return false
     end
 
-    task.wait(0.35)
+    task.wait(0.1)
     return callSellaryInteract("Deal", 1)
 end
 
@@ -1629,9 +1680,12 @@ local function sellBaseOres()
     for _, part in ipairs(parts) do
         local destination = getSellZoneDropPosition(moved + 1, part)
 
-        if destination and moveGrabPartToBase(part, destination) then
+        if destination and moveGrabPartFast(part, destination) then
             moved = moved + 1
-            task.wait(MiningDropSettleDelay)
+
+            if moved % 10 == 0 then
+                task.wait(MiningStorageBatchDelay)
+            end
         end
     end
 
@@ -1640,7 +1694,7 @@ local function sellBaseOres()
         return 0
     end
 
-    task.wait(0.6)
+    task.wait(0.2)
 
     if talkToSellary() then
         miningNotify(("Sell request sent for %d ore blocks."):format(moved))
@@ -1674,9 +1728,12 @@ local function bringSafeOresToPlayer()
     for _, part in ipairs(parts) do
         local destination = getPlayerDropPosition(moved + 1, part)
 
-        if destination and moveGrabPartToBase(part, destination) then
+        if destination and moveGrabPartFast(part, destination) then
             moved = moved + 1
-            task.wait(MiningDropSettleDelay)
+
+            if moved % 10 == 0 then
+                task.wait(MiningStorageBatchDelay)
+            end
         end
     end
 
