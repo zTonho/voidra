@@ -729,15 +729,15 @@ local MiningAutoRouteDelay = 0.012
 local MiningAutoRouteFinalRepeats = 4
 local MiningAutoBatchDelay = 0.004
 local MiningBagCapacity = 5
-local MiningBagStoreDelay = 0.04
-local MiningBagStorePositionDelay = 0.06
-local MiningBagDropDelay = 0.12
+local MiningBagStoreDelay = 0.025
+local MiningBagStorePositionDelay = 0.035
+local MiningBagDropDelay = 0.09
 local MiningBagStoreHeight = 3
 local MiningBagCollectionPasses = 12
-local MiningBagCollectionPassDelay = 0.12
+local MiningBagCollectionPassDelay = 0.06
 local MiningBagDropExtraCalls = 6
 local MiningBagFinalDropCalls = 4
-local MiningBagReturnDelay = 0.16
+local MiningBagReturnDelay = 0.08
 local MiningGrabReleaseRepeats = 6
 local MiningGrabReleaseDelay = 0.04
 local MiningDropWaitTimeout = 0.25
@@ -1965,15 +1965,16 @@ local function isDroppedPartActive(part)
         and container:IsDescendantOf(workspace)
 end
 
-local function storePartInItemBag(part)
+local function storePartInItemBag(part, playerAction, bagAction)
     if not part or not part.Parent then
         return false
     end
 
-    equipItemBag()
-
-    local playerAction = getPlayerActionRemote(0.75)
-    local bagAction = getEquippedItemBagAction()
+    if not playerAction and not bagAction then
+        equipItemBag()
+        playerAction = getPlayerActionRemote(0.75)
+        bagAction = getEquippedItemBagAction()
+    end
 
     if not playerAction and not bagAction then
         return false
@@ -2143,6 +2144,8 @@ local function moveDroppedOresToBase(origin)
         return 0
     end
 
+    local playerAction = getPlayerActionRemote(0.75)
+    local bagAction = getEquippedItemBagAction()
     local storedInBag = 0
     local storeAttempts = 0
     local storedParts = {}
@@ -2165,14 +2168,14 @@ local function moveDroppedOresToBase(origin)
     end
 
     for pass = 1, MiningBagCollectionPasses do
-        local parts = waitForDroppedOrePartsNearCharacter(origin)
+        local parts = pass == 1 and waitForDroppedOrePartsNearCharacter(origin) or getDroppedOrePartsNearCharacter(origin)
         local storedThisPass = 0
 
         for _, part in ipairs(parts) do
             if not storedParts[part] then
                 storeAttempts = storeAttempts + 1
 
-                if storePartInItemBag(part) then
+                if storePartInItemBag(part, playerAction, bagAction) then
                     storedParts[part] = true
                     storedInBag = storedInBag + 1
                     storedThisPass = storedThisPass + 1
