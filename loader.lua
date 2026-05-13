@@ -2144,7 +2144,7 @@ local function moveGrabPartToBaseRouted(part, destination)
     return moved
 end
 
-local function moveDroppedOresToBase(origin)
+local function moveDroppedOresToBase(origin, flushPartialAtEnd)
     local destination = getPlotDropPosition(1)
 
     if not destination then
@@ -2167,13 +2167,18 @@ local function moveDroppedOresToBase(origin)
     local storeAttempts = 0
     local storedParts = {}
 
-    local function flushItemBag()
-        if MiningState.BagStoredCount < MiningBagCapacity then
+    local function flushItemBag(forcePartial)
+        if MiningState.BagStoredCount <= 0 then
+            return
+        end
+
+        if MiningState.BagStoredCount < MiningBagCapacity and not forcePartial then
             return
         end
 
         local nextSlot = moved + 1
-        moved = moved + dropItemBagAtBase(nextSlot, MiningBagCapacity)
+        local dropAmount = forcePartial and MiningState.BagStoredCount or MiningBagCapacity
+        moved = moved + dropItemBagAtBase(nextSlot, dropAmount)
         clearItemBagAtBase(moved + 1)
         MiningState.BagStoredCount = 0
         task.wait(MiningAutoBatchDelay)
@@ -2209,6 +2214,10 @@ local function moveDroppedOresToBase(origin)
         end
 
         task.wait(MiningBagCollectionPassDelay)
+    end
+
+    if flushPartialAtEnd then
+        flushItemBag(true)
     end
 
     if storeAttempts > 0 and moved <= 0 then
@@ -2634,7 +2643,7 @@ local function mineOneOre(stopWhenToggleOff, stopOnUnequip)
     local mined, dropOrigin = mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
 
     if mined then
-        moveDroppedOresToBase(dropOrigin)
+        moveDroppedOresToBase(dropOrigin, stopWhenToggleOff)
         miningNotify("Ore collected successfully.")
     end
 
