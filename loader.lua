@@ -726,11 +726,8 @@ local MiningDropWaitTimeout = 0.25
 local MiningDropPollDelay = 0.02
 local MiningTargetSettleDelay = 0.03
 local MiningAttackResultDelay = 0.08
-local MiningMapLoadStepDelay = 0.18
-local MiningMapLoadCooldown = 8
-local MiningMapLoadMinDistance = 180
-local MiningMapLoadMaxPoints = 80
-local MiningMapLoadGridSpacing = 320
+local MiningLocationLoadStepDelay = 0.18
+local MiningLocationLoadCooldown = 8
 local MiningBaseDropHeight = 1.75
 local MiningDropSpacing = 5
 local MiningDropMaxColumns = 7
@@ -740,7 +737,7 @@ local MiningSellDropSpacing = 4
 local MiningTierWarningScanRadius = 45
 local MiningMaxChargeMisses = 20
 local LastMiningWarning = 0
-local LastMiningMapLoad = 0
+local LastMiningLocationLoad = 0
 
 local OreNames = {
     "Abyssalite",
@@ -929,6 +926,45 @@ local function getPosition(instance)
 
     local part = instance:FindFirstChildWhichIsA("BasePart", true)
     return part and part.Position or nil
+end
+
+local function getCFrame(instance)
+    if not instance then
+        return nil
+    end
+
+    if instance:IsA("BasePart") then
+        return instance.CFrame
+    end
+
+    if instance:IsA("Attachment") then
+        return CFrame.new(instance.WorldPosition)
+    end
+
+    if instance:IsA("CFrameValue") then
+        return instance.Value
+    end
+
+    if instance:IsA("Vector3Value") then
+        return CFrame.new(instance.Value)
+    end
+
+    if instance:IsA("ObjectValue") and instance.Value then
+        return getCFrame(instance.Value)
+    end
+
+    if instance:IsA("Model") then
+        local ok, pivot = pcall(function()
+            return instance:GetPivot()
+        end)
+
+        if ok then
+            return pivot
+        end
+    end
+
+    local part = instance:FindFirstChildWhichIsA("BasePart", true)
+    return part and part.CFrame or nil
 end
 
 local function isLikelyChargeGui(object)
@@ -1483,120 +1519,35 @@ local function getNearestOreTarget(oreFilter)
     return targets[1]
 end
 
-local function getContainerBounds(container)
-    if not container then
-        return nil, nil
-    end
+local function getOreLoadLocationFolder()
+    local mouseIgnore = workspace:FindFirstChild("Mouseignore")
+        or workspace:FindFirstChild("MouseIgnore")
+        or workspace:FindFirstChild("mouseignore")
 
-    if container:IsA("BasePart") then
-        return container.Position, container.Size
-    end
-
-    if container:IsA("Model") then
-        local ok, boundsCFrame, boundsSize = pcall(function()
-            return container:GetBoundingBox()
-        end)
-
-        if ok and boundsCFrame and boundsSize then
-            return boundsCFrame.Position, boundsSize
-        end
-    end
-
-    local minPosition = Vector3.new(math.huge, math.huge, math.huge)
-    local maxPosition = Vector3.new(-math.huge, -math.huge, -math.huge)
-    local found = false
-
-    for _, object in ipairs(container:GetDescendants()) do
-        if object:IsA("BasePart") then
-            local halfSize = object.Size / 2
-            local low = object.Position - halfSize
-            local high = object.Position + halfSize
-
-            minPosition = Vector3.new(
-                math.min(minPosition.X, low.X),
-                math.min(minPosition.Y, low.Y),
-                math.min(minPosition.Z, low.Z)
-            )
-
-            maxPosition = Vector3.new(
-                math.max(maxPosition.X, high.X),
-                math.max(maxPosition.Y, high.Y),
-                math.max(maxPosition.Z, high.Z)
-            )
-
-            found = true
-        end
-    end
-
-    if not found then
-        return nil, nil
-    end
-
-    return (minPosition + maxPosition) / 2, maxPosition - minPosition
+    return mouseIgnore and mouseIgnore:FindFirstChild("Locations") or nil
 end
 
-local function addMapLoadPoint(points, position)
-    if not position then
-        return
+local function getOreLoadCFrames()
+    local locations = getOreLoadLocationFolder()
+    local cframes = {}
+
+    if not locations then
+        return cframes
     end
 
-    for _, existing in ipairs(points) do
-        if (existing - position).Magnitude < MiningMapLoadMinDistance then
-            return
+    for _, location in ipairs(locations:GetChildren()) do
+        local cframe = getCFrame(location)
+
+        if cframe then
+            cframes[#cframes + 1] = cframe
         end
     end
 
-    points[#points + 1] = position
-end
+    table.sort(cframes, function(a, b)
+        return tostring(a.Position) < tostring(b.Position)
+    end)
 
-local function getMapLoadPoints(oreFilter)
-    local points = {}
-    local oresFolder = getOresFolder()
-
-    if oresFolder then
-        for _, ore in ipairs(oresFolder:GetChildren()) do
-            local oreName = normalizeOreName(ore.Name)
-
-            if oreName and oreName == oreFilter then
-                addMapLoadPoint(points, getPosition(ore))
-            end
-        end
-    end
-
-    if #points < 3 then
-        local loadSource = workspace:FindFirstChild("WorldSpawn")
-            or workspace:FindFirstChild("Map")
-            or oresFolder
-        local center, size = getContainerBounds(loadSource)
-        local root = getRoot()
-        local y = root and root.Position.Y or (center and center.Y) or 0
-
-        if center and size then
-            local halfX = math.min(size.X / 2, MiningMapLoadGridSpacing * 4)
-            local halfZ = math.min(size.Z / 2, MiningMapLoadGridSpacing * 4)
-
-            for x = center.X - halfX, center.X + halfX, MiningMapLoadGridSpacing do
-                for z = center.Z - halfZ, center.Z + halfZ, MiningMapLoadGridSpacing do
-                    addMapLoadPoint(points, Vector3.new(x, y, z))
-                end
-            end
-        end
-    end
-
-    local root = getRoot()
-    local rootPosition = root and root.Position
-
-    if rootPosition then
-        table.sort(points, function(a, b)
-            return (a - rootPosition).Magnitude < (b - rootPosition).Magnitude
-        end)
-    end
-
-    while #points > MiningMapLoadMaxPoints do
-        table.remove(points)
-    end
-
-    return points
+    return cframes
 end
 
 local function getGrabPart(object)
@@ -1984,6 +1935,17 @@ local function teleportNear(position)
     return true
 end
 
+local function teleportToLoadCFrame(cframe)
+    local root = getRoot()
+
+    if not root or not cframe then
+        return false
+    end
+
+    root.CFrame = cframe + Vector3.new(0, MiningTeleportOffset, 0)
+    return true
+end
+
 local function canContinueMining(stopWhenToggleOff)
     if MiningState.StopRequested then
         return false
@@ -1996,49 +1958,33 @@ local function canContinueMining(stopWhenToggleOff)
     return true
 end
 
-local function loadOreAreas(oreFilter, stopWhenToggleOff, force)
-    if not force and os.clock() - LastMiningMapLoad < MiningMapLoadCooldown then
+local function loadOreLocations(stopWhenToggleOff, force)
+    if not force and os.clock() - LastMiningLocationLoad < MiningLocationLoadCooldown then
         return 0
     end
 
-    local root = getRoot()
+    local cframes = getOreLoadCFrames()
 
-    if not root then
-        miningNotify("Character root was not found.")
+    if #cframes == 0 then
         return 0
     end
 
-    local points = getMapLoadPoints(oreFilter)
-
-    if #points == 0 then
-        miningWarn("No map load points found.")
-        return 0
-    end
-
-    LastMiningMapLoad = os.clock()
+    LastMiningLocationLoad = os.clock()
     miningNotify("Loading ores...")
 
     local visited = 0
 
-    for _, position in ipairs(points) do
+    for _, cframe in ipairs(cframes) do
         if not canContinueMining(stopWhenToggleOff) then
             break
         end
 
-        if not teleportNear(position) then
+        if not teleportToLoadCFrame(cframe) then
             break
         end
 
         visited = visited + 1
-        task.wait(MiningMapLoadStepDelay)
-
-        if not force and #getOreTargets(oreFilter) > 0 then
-            break
-        end
-    end
-
-    if visited > 0 then
-        miningNotify("Ores loaded.")
+        task.wait(MiningLocationLoadStepDelay)
     end
 
     return visited
@@ -2192,11 +2138,11 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
     return hits > 0 and not isOreAlive(entry.Ore), dropOrigin
 end
 
-local function mineOneOre(stopWhenToggleOff, stopOnUnequip, allowMapLoad)
+local function mineOneOre(stopWhenToggleOff, stopOnUnequip, allowLocationLoad)
     local entry = getNearestOreTarget(MiningState.SelectedOre)
 
-    if not entry and allowMapLoad then
-        loadOreAreas(MiningState.SelectedOre, stopWhenToggleOff, false)
+    if not entry and allowLocationLoad then
+        loadOreLocations(stopWhenToggleOff, not stopWhenToggleOff)
         entry = getNearestOreTarget(MiningState.SelectedOre)
     end
 
@@ -2233,19 +2179,6 @@ MiningBox:AddButton({
         task.spawn(function()
             MiningState.StopRequested = false
             mineOneOre(false, true, true)
-        end)
-    end,
-})
-
-MiningBox:AddButton({
-    Text = "Load ore areas",
-    Func = function()
-        task.spawn(function()
-            local visited = loadOreAreas(MiningState.SelectedOre, false, true)
-
-            if visited == 0 then
-                miningNotify("No ore load points visited.")
-            end
         end)
     end,
 })
