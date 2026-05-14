@@ -1,4 +1,4 @@
-local Repo = "https://raw.githubusercontent.com/zTonho/voidra-bridgerwestern/refs/heads/main/"
+local Repo = "https://raw.githubusercontent.com/zTonho/voidra-bridgerwestern/refs/heads/dev-test/"
 local ObsidianRepo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/refs/heads/main/"
 local CacheToken = tostring(os.time())
 
@@ -3632,7 +3632,7 @@ end
 
 local MiningBox = Tabs.Mining:AddLeftGroupbox("Autofarm", "pickaxe")
 
-MiningBox:AddLabel("⚠ High ping may affect farm.")
+MiningBox:AddLabel("âš  High ping may affect farm.")
 
 MiningBox:AddDropdown("MiningOreFilter", {
     Text = "Ore",
