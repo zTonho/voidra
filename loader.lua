@@ -2320,10 +2320,10 @@ local function sellBaseOres()
         return 0
     end
 
-    local parts = getOwnedDroppedOreParts()
+    local parts = getBaseDroppedOreParts()
 
     if #parts == 0 then
-        miningNotify("No owned ores found.")
+        miningNotify("No ores found in your base.")
         return 0
     end
 
