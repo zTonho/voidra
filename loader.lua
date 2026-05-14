@@ -762,7 +762,8 @@ local MiningAttackBurstCount = 5
 local MiningAttackBurstDelay = 0.025
 local MiningAttackBurstYieldEvery = 1
 local MiningTeleportRefreshDistance = 12
-local MiningOreSpotLoadDelay = 4
+local MiningOreSpotDetectTimeout = 2.5
+local MiningOreSpotPollDelay = 0.05
 local MiningOreSpotLoadCooldown = 20
 local MiningTargetRefreshTimeout = 1.2
 local MiningTargetRefreshPollDelay = 0.05
@@ -773,6 +774,9 @@ local MiningDropMaxColumns = 7
 local MiningPlotInset = 5
 local MiningBringRadius = 18
 local MiningSellDropSpacing = 4
+local MiningSellLoadTimeout = 3
+local MiningSellLoadPollDelay = 0.1
+local MiningSellSettleDelay = 0.75
 local MiningMaxChargeMisses = 20
 local LastMiningWarning = 0
 local LastMiningOreSpotLoad = {}
@@ -2261,17 +2265,84 @@ local function moveDroppedOresToBase(origin, flushPartialAtEnd)
 end
 
 local function talkToSellary()
-    if not getSellTalkPart() then
+    local talkPart = getSellTalkPart()
+
+    if not talkPart then
         miningWarn("Nova Sellary talk part was not found.")
         return false
+    end
+
+    local talkPosition = getPosition(talkPart)
+
+    if talkPosition then
+        setCharacterAt(talkPosition)
+        task.wait(0.2)
     end
 
     if not callSellaryInteract() then
         return false
     end
 
-    task.wait(0.1)
-    return callSellaryInteract("Deal", 1)
+    task.wait(0.2)
+
+    local sold = false
+
+    for _ = 1, 3 do
+        sold = callSellaryInteract("Deal", 1) or sold
+        task.wait(0.15)
+    end
+
+    return sold
+end
+
+local function loadOwnedOresForSale()
+    local standPosition = getPlotStandPosition()
+
+    if standPosition then
+        setCharacterExactAt(standPosition)
+        task.wait(MiningSellLoadPollDelay)
+    end
+
+    local startedAt = os.clock()
+    local parts = getOwnedDroppedOreParts()
+
+    while #parts == 0 and os.clock() - startedAt < MiningSellLoadTimeout do
+        task.wait(MiningSellLoadPollDelay)
+        parts = getOwnedDroppedOreParts()
+    end
+
+    return parts
+end
+
+local function settleSellZoneOres(parts)
+    local sellPosition = getSellZoneDropPosition(1)
+
+    if sellPosition then
+        setCharacterAt(sellPosition)
+        task.wait(MiningSellLoadPollDelay)
+    end
+
+    for index, part in ipairs(parts) do
+        if part and part.Parent then
+            local destination = getSellZoneDropPosition(index, part)
+
+            if destination then
+                setGrabPartAt(part, destination)
+                callGrabHandler(part, "Grab", destination)
+                callGrabHandler(part, "Ungrab")
+            end
+        end
+
+        if index % 8 == 0 then
+            task.wait(MiningStorageBatchDelay)
+        end
+    end
+
+    if sellPosition then
+        setCharacterAt(sellPosition)
+    end
+
+    task.wait(MiningSellSettleDelay)
 end
 
 local function sellBaseOres()
@@ -2285,7 +2356,7 @@ local function sellBaseOres()
         return 0
     end
 
-    local parts = getOwnedDroppedOreParts()
+    local parts = loadOwnedOresForSale()
 
     if #parts == 0 then
         miningNotify("No owned ores found.")
@@ -2293,12 +2364,14 @@ local function sellBaseOres()
     end
 
     local moved = 0
+    local movedParts = {}
 
     for _, part in ipairs(parts) do
         local destination = getSellZoneDropPosition(moved + 1, part)
 
-        if destination and moveGrabPartFast(part, destination) then
+        if destination and moveGrabPartToBaseRouted(part, destination) then
             moved = moved + 1
+            movedParts[moved] = part
 
             if moved % 10 == 0 then
                 task.wait(MiningStorageBatchDelay)
@@ -2311,7 +2384,7 @@ local function sellBaseOres()
         return 0
     end
 
-    task.wait(0.08)
+    settleSellZoneOres(movedParts)
 
     if talkToSellary() then
         miningNotify("Ore sold successfully.")
@@ -2429,17 +2502,26 @@ local function loadOreSpots(oreFilter, stopWhenToggleOff, force)
         end
 
         local startedAt = os.clock()
-        while os.clock() - startedAt < MiningOreSpotLoadDelay do
+        while os.clock() - startedAt < MiningOreSpotDetectTimeout do
             if not canContinueMining(stopWhenToggleOff) then
                 return false
             end
 
-            task.wait(0.1)
+            if getNearestOreTarget(oreFilter) then
+                miningNotify("Ores loaded.")
+                return true
+            end
+
+            task.wait(MiningOreSpotPollDelay)
         end
     end
 
-    miningNotify("Ores loaded.")
-    return true
+    if getNearestOreTarget(oreFilter) then
+        miningNotify("Ores loaded.")
+        return true
+    end
+
+    return false
 end
 
 local function refreshOreEntry(entry)
