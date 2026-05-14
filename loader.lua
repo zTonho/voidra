@@ -224,6 +224,7 @@ local FishingCatchPollDelay = 0.04
 local FishingHeldDropDelay = 0.22
 local FishingSellAfterCatchDelay = 0.05
 local FishingSellDropSpacing = 4
+local FishingSellDropHeight = 1.25
 local FishingSellMoveRepeats = 5
 local FishingSellStepDelay = 0.003
 local FishingSellSettleDelay = 0.2
@@ -766,26 +767,26 @@ local function getFishSellZoneData()
         return nil, nil, nil
     end
 
-    local target = sellZone:IsA("Model") and sellZone.PrimaryPart or nil
-    target = target
-        or sellZone:FindFirstChild("Area", true)
-        or sellZone:FindFirstChildWhichIsA("BasePart", true)
-        or sellZone
+    local target = sellZone:FindFirstChild("Area", true)
 
-    if target:IsA("BasePart") then
-        return target.Position, target.Size, target.Position.Y + (target.Size.Y / 2)
+    if target and target:IsA("BasePart") then
+        return target.Position, target.Size, target.Position.Y + (target.Size.Y / 2) + 0.5
     end
 
-    if target:IsA("Model") then
-        local cframe, size = target:GetBoundingBox()
-        return cframe.Position, size, cframe.Position.Y + (size.Y / 2)
+    if sellZone:IsA("Model") then
+        local cframe, size = sellZone:GetBoundingBox()
+        return cframe.Position, size, cframe.Position.Y - (size.Y / 2) + FishingSellDropHeight
+    end
+
+    if sellZone:IsA("BasePart") then
+        return sellZone.Position, sellZone.Size, sellZone.Position.Y + (sellZone.Size.Y / 2) + 0.5
     end
 
     return nil, nil, nil
 end
 
 local function getFishSellDropPosition(slot)
-    local position, size, topY = getFishSellZoneData()
+    local position, size, dropY = getFishSellZoneData()
 
     if not position then
         return nil
@@ -795,10 +796,12 @@ local function getFishSellDropPosition(slot)
     local index = slot - 1
     local column = index % columns
     local row = math.floor(index / columns)
-    local xOffset = (column - ((columns - 1) / 2)) * FishingSellDropSpacing
-    local zOffset = (row - 1) * FishingSellDropSpacing
+    local xLimit = math.max(1, (size.X / 2) - 2)
+    local zLimit = math.max(1, (size.Z / 2) - 2)
+    local xOffset = math.clamp((column - ((columns - 1) / 2)) * FishingSellDropSpacing, -xLimit, xLimit)
+    local zOffset = math.clamp(row * FishingSellDropSpacing, -zLimit, zLimit)
 
-    return Vector3.new(position.X + xOffset, topY + 2, position.Z + zOffset)
+    return Vector3.new(position.X + xOffset, dropY, position.Z + zOffset)
 end
 
 local function getNauticSellaryInteract()
@@ -821,6 +824,26 @@ local function hasCatchTag(instance)
     end)
 
     return ok and tagged == true
+end
+
+local function getCatchMarkerRoot(marker)
+    if not marker then
+        return nil
+    end
+
+    if hasCatchTag(marker) then
+        return marker
+    end
+
+    if marker.Name == "_CatchWeld" or marker.Name == "_CatchAttachment" then
+        local root = marker:FindFirstAncestorWhichIsA("Model")
+
+        if root and root ~= getMainCharacter() then
+            return root
+        end
+    end
+
+    return nil
 end
 
 local function getCatchMoveRoot(instance)
@@ -898,8 +921,8 @@ function getCatchParts()
     local parts = {}
     local seen = {}
 
-    for _, catch in ipairs(CollectionService:GetTagged("_IsCatch")) do
-        if catch:IsDescendantOf(workspace) then
+    local function addCatch(catch)
+        if catch and (catch:IsDescendantOf(workspace) or catch:IsDescendantOf(LocalPlayer)) then
             local part, root = getCatchMovePart(catch)
 
             if part and root and not seen[root] then
@@ -908,6 +931,22 @@ function getCatchParts()
                     Part = part,
                     Root = root,
                 }
+            end
+        end
+    end
+
+    for _, catch in ipairs(CollectionService:GetTagged("_IsCatch")) do
+        addCatch(catch)
+    end
+
+    for _, container in ipairs({ getMainCharacter(), workspace:FindFirstChild("Grab") }) do
+        if container then
+            for _, object in ipairs(container:GetDescendants()) do
+                local root = getCatchMarkerRoot(object)
+
+                if root then
+                    addCatch(root)
+                end
             end
         end
     end
