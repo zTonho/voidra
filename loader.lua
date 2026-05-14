@@ -2325,7 +2325,7 @@ local function sellBaseOres()
     for _, part in ipairs(parts) do
         local destination = getSellZoneDropPosition(moved + 1, part)
 
-        if destination and moveGrabPartFast(part, destination, MiningAutoRouteFinalRepeats, MiningAutoRouteDelay, MiningAutoLiftHeight) then
+        if destination and moveGrabPartToBase(part, destination) then
             moved = moved + 1
 
             if moved % 10 == 0 then
