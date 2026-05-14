@@ -780,6 +780,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer = Players.LocalPlayer or Players.PlayerAdded:Wait()
 local MiningState = State.Mining
 local MiningChargeTime = 0.63
+local MiningChargeAlpha = 1
+local MiningSensitiveChargeAlpha = 0.55
 local MiningSensitiveChargeTime = 0.55
 local MiningSensitiveChargeDelay = 0
 local MiningSensitiveAttackBurstCount = 1
@@ -2834,6 +2836,7 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
 
             local attacksFired = 0
             local attackBurstCount = chargeSensitiveOre and MiningSensitiveAttackBurstCount or MiningAttackBurstCount
+            local attackAlpha = chargeSensitiveOre and MiningSensitiveChargeAlpha or MiningChargeAlpha
             local attackResponseTime = chargeSensitiveOre and MiningSensitiveChargeTime or MiningChargeTime
 
             if chargeSensitiveOre then
@@ -2852,7 +2855,7 @@ local function mineTarget(entry, stopWhenToggleOff, stopOnUnequip)
 
                 local attacked = pcall(function()
                     AttackRemote:FireServer({
-                        Alpha = 1,
+                        Alpha = attackAlpha,
                         ResponseTime = attackResponseTime,
                     })
                 end)
