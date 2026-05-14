@@ -2932,6 +2932,8 @@ end
 
 local MiningBox = Tabs.Mining:AddLeftGroupbox("Autofarm", "pickaxe")
 
+MiningBox:AddLabel("High ping can affect autofarm timing.")
+
 MiningBox:AddDropdown("MiningOreFilter", {
     Text = "Ore",
     Values = OreNames,
