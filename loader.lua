@@ -776,6 +776,12 @@ local MiningDropMaxColumns = 7
 local MiningPlotInset = 5
 local MiningBringRadius = 18
 local MiningSellDropSpacing = 4
+local MiningSellMoveSteps = 4
+local MiningSellStepDelay = 0.006
+local MiningSellFinalRepeats = 14
+local MiningSellReleaseRepeats = 6
+local MiningSellRetryDistance = 10
+local MiningSellBatchDelay = 0.001
 local MiningMaxChargeMisses = 20
 local LastMiningWarning = 0
 local LastMiningOreSpotLoad = {}
@@ -1826,6 +1832,89 @@ local function moveGrabPartToBase(part, destination)
     return moved
 end
 
+local function moveGrabPartToSell(part, destination)
+    if not part or not part.Parent or not destination then
+        return false
+    end
+
+    local startPosition = getPosition(part)
+
+    if not startPosition then
+        return false
+    end
+
+    local moved = false
+    local function setSellPartAt(position)
+        pcall(function()
+            part.CFrame = CFrame.new(position)
+            part.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+            part.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+        end)
+    end
+
+    moved = callGrabHandler(part, "Grab", startPosition) or moved
+    task.wait(MiningSellStepDelay)
+
+    for i = 1, MiningSellMoveSteps do
+        if not part.Parent then
+            break
+        end
+
+        local alpha = i / MiningSellMoveSteps
+        local position = startPosition:Lerp(destination, alpha)
+
+        setSellPartAt(position)
+        moved = callGrabHandler(part, "Grab", position) or moved
+        task.wait(MiningSellStepDelay)
+    end
+
+    for _ = 1, MiningSellFinalRepeats do
+        if not part.Parent then
+            break
+        end
+
+        setSellPartAt(destination)
+        moved = callGrabHandler(part, "Grab", destination) or moved
+        task.wait(MiningSellStepDelay)
+    end
+
+    for _ = 1, MiningSellReleaseRepeats do
+        if not part.Parent then
+            break
+        end
+
+        setSellPartAt(destination)
+        callGrabHandler(part, "Ungrab")
+        task.wait(MiningSellStepDelay)
+    end
+
+    local finalPosition = getPosition(part)
+
+    if finalPosition and (finalPosition - destination).Magnitude > MiningSellRetryDistance then
+        for _ = 1, MiningSellFinalRepeats do
+            if not part.Parent then
+                break
+            end
+
+            setSellPartAt(destination)
+            moved = callGrabHandler(part, "Grab", destination) or moved
+            task.wait(MiningSellStepDelay)
+        end
+
+        for _ = 1, MiningSellReleaseRepeats do
+            if not part.Parent then
+                break
+            end
+
+            setSellPartAt(destination)
+            callGrabHandler(part, "Ungrab")
+            task.wait(MiningSellStepDelay)
+        end
+    end
+
+    return moved
+end
+
 local function moveGrabPartFast(part, destination, repeats, delay, liftHeight)
     if not part or not part.Parent or not destination then
         return false
@@ -2325,11 +2414,11 @@ local function sellBaseOres()
     for _, part in ipairs(parts) do
         local destination = getSellZoneDropPosition(moved + 1, part)
 
-        if destination and moveGrabPartToBase(part, destination) then
+        if destination and moveGrabPartToSell(part, destination) then
             moved = moved + 1
 
             if moved % 10 == 0 then
-                task.wait(MiningStorageBatchDelay)
+                task.wait(MiningSellBatchDelay)
             end
         end
     end
