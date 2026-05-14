@@ -218,9 +218,9 @@ local FishingReelFinisherHits = 20
 local FishingReelEndRepeats = 2
 local FishingCatchingHitTimeout = 1.8
 local FishingCatchingSettleDelay = 0.08
-local FishingPostReelDelay = 0.18
-local FishingCycleDelay = 0.05
-local FishingIdleDelay = 0.35
+local FishingPostReelDelay = 0.03
+local FishingCycleDelay = 0.005
+local FishingIdleDelay = 0.2
 local FishingHotspotHoverHeight = 9
 local FishingBaseTeleportOffset = 5
 local FishingBaseDropSpacing = 4
@@ -1290,10 +1290,12 @@ Toggles.FishingAutoFish:OnChanged(function(enabled)
             local cycleOk = ok and result == true
 
             if cycleOk and FishingState.AutoSell then
-                task.wait(FishingSellAfterCatchDelay)
-                sellFishCatches()
-            elseif cycleOk then
-                storeFishCatchesAtBase()
+                task.spawn(function()
+                    task.wait(FishingSellAfterCatchDelay)
+                    sellFishCatches()
+                end)
+            elseif cycleOk and FishingState.AutoStore then
+                task.spawn(storeFishCatchesAtBase)
             end
 
             task.wait(cycleOk and FishingCycleDelay or FishingIdleDelay)
