@@ -144,7 +144,6 @@ local State = {
         AutoFish = false,
         AutoSell = false,
         UseHotspots = true,
-        HotspotOnly = false,
         StopRequested = false,
     },
     Mining = {
@@ -207,27 +206,29 @@ local FishingSpotPosition = Vector3.new(1768.35, 3.03, -1398.29)
 local FishingCastCFrame = CFrame.new(1743.9234619140625, -5.975002288818359, -1410.97705078125, -0, 1, -0, -0, 0, -1, -1, 0, -0)
 local FishingCastRotation = CFrame.new(0, 0, 0, -0, 1, -0, -0, 0, -1, -1, 0, -0)
 local FishingAttackAlpha = 1
-local FishingAttackResponseTime = 0.75
-local FishingCastAttackDelay = 0.04
-local FishingLineLandDelay = 0.85
-local FishingReelWaitTimeout = 14
-local FishingReelPollDelay = 0.035
-local FishingReelHitDelay = 0.004
-local FishingReelHitRepeats = 34
-local FishingReelEndRepeats = 2
-local FishingCycleDelay = 0.2
-local FishingIdleDelay = 0.9
+local FishingAttackResponseTime = 0.45
+local FishingCastAttackDelay = 0.025
+local FishingLineLandDelay = 0.65
+local FishingReelWaitTimeout = 10
+local FishingReelPollDelay = 0.02
+local FishingReelHitDelay = 0.002
+local FishingReelHitRepeats = 52
+local FishingReelEndRepeats = 3
+local FishingCycleDelay = 0.08
+local FishingIdleDelay = 0.45
 local FishingHotspotHoverHeight = 9
 local FishingBaseTeleportOffset = 5
-local FishingCatchSpawnTimeout = 2.5
-local FishingCatchPollDelay = 0.04
-local FishingHeldDropDelay = 0.22
-local FishingSellAfterCatchDelay = 0.05
+local FishingBaseDropSpacing = 4
+local FishingBaseDropHeight = 1.25
+local FishingCatchSpawnTimeout = 1.4
+local FishingCatchPollDelay = 0.025
+local FishingHeldDropDelay = 0.12
+local FishingSellAfterCatchDelay = 0.02
 local FishingSellDropSpacing = 4
 local FishingSellDropHeight = 1.25
 local FishingSellMoveRepeats = 5
 local FishingSellStepDelay = 0.003
-local FishingSellSettleDelay = 0.2
+local FishingSellSettleDelay = 0.12
 local FishingSellDealRepeats = 3
 local FishingHoverMover = nil
 local getCatchParts
@@ -428,6 +429,36 @@ local function getMainPlotStandPosition()
     return Vector3.new(position.X, topY + FishingBaseTeleportOffset, position.Z)
 end
 
+local function getMainPlotDropPosition(slot)
+    local plot = getMainLocalPlot()
+
+    if not plot then
+        return nil
+    end
+
+    local target = plot:FindFirstChild("Plot")
+        or plot:FindFirstChild("ProjectionZone")
+        or plot:FindFirstChild("Objects")
+        or plot
+
+    local position, size, topY = getMainAreaData(target, Vector3.new(36, 1, 36))
+
+    if not position then
+        return nil
+    end
+
+    local columns = math.max(1, math.min(6, math.floor(size.X / FishingBaseDropSpacing)))
+    local index = slot - 1
+    local column = index % columns
+    local row = math.floor(index / columns)
+    local xLimit = math.max(1, (size.X / 2) - 2)
+    local zLimit = math.max(1, (size.Z / 2) - 2)
+    local xOffset = math.clamp((column - ((columns - 1) / 2)) * FishingBaseDropSpacing, -xLimit, xLimit)
+    local zOffset = math.clamp(row * FishingBaseDropSpacing, -zLimit, zLimit)
+
+    return Vector3.new(position.X + xOffset, topY + FishingBaseDropHeight, position.Z + zOffset)
+end
+
 local function stopFishingHover()
     if FishingHoverMover then
         FishingHoverMover:Destroy()
@@ -584,10 +615,6 @@ local function getFishingCastData()
         return hotspotPosition + Vector3.new(0, FishingHotspotHoverHeight, 0),
             CFrame.new(hotspotPosition) * FishingCastRotation,
             true
-    end
-
-    if FishingState.HotspotOnly then
-        return nil, nil, false
     end
 
     return FishingSpotPosition, FishingCastCFrame, false
@@ -1030,16 +1057,28 @@ local function dropHeldFishCatchAt(position)
 end
 
 local function storeFishCatchesAtBase()
-    local position = getMainPlotStandPosition()
-
-    if not position then
+    if not getMainPlotDropPosition(1) then
         finishFishingAtBase()
         return false
     end
 
-    dropHeldFishCatchAt(position)
-    finishFishingAtBase()
-    return true
+    local catches = getCatchParts()
+
+    if #catches == 0 then
+        return false
+    end
+
+    local moved = 0
+
+    for _, entry in ipairs(catches) do
+        local destination = getMainPlotDropPosition(moved + 1)
+
+        if destination and moveCatchToSell(entry, destination) then
+            moved = moved + 1
+        end
+    end
+
+    return moved > 0
 end
 
 local function sellFishCatches()
@@ -1049,8 +1088,6 @@ local function sellFishCatches()
         mainNotify("Nautic sell zone was not found.")
         return 0
     end
-
-    dropHeldFishCatchAt(firstDropPosition)
 
     local catches = getCatchParts()
 
@@ -1122,6 +1159,7 @@ FishingBox:AddButton({
                 finishFishingAtBase()
             elseif cycleOk then
                 storeFishCatchesAtBase()
+                finishFishingAtBase()
             else
                 finishFishingAtBase()
             end
@@ -1138,11 +1176,6 @@ FishingBox:AddDivider("Hotspots")
 FishingBox:AddToggle("FishingUseHotspots", {
     Text = "Use hotspots",
     Default = true,
-})
-
-FishingBox:AddToggle("FishingHotspotOnly", {
-    Text = "Hotspot only",
-    Default = false,
 })
 
 FishingBox:AddDivider("Storage")
@@ -1162,10 +1195,6 @@ local fishingLoopRunning = false
 
 Toggles.FishingUseHotspots:OnChanged(function(enabled)
     FishingState.UseHotspots = enabled
-end)
-
-Toggles.FishingHotspotOnly:OnChanged(function(enabled)
-    FishingState.HotspotOnly = enabled
 end)
 
 Toggles.FishingAutoSell:OnChanged(function(enabled)
