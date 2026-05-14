@@ -144,6 +144,9 @@ local State = {
         AutoFish = false,
         AutoSell = false,
         AutoStore = false,
+        StoreFilter = {
+            All = true,
+        },
         UseHotspots = true,
         StopRequested = false,
     },
@@ -212,13 +215,11 @@ local FishingCastAttackDelay = 0.02
 local FishingLineLandDelay = 0.48
 local FishingReelWaitTimeout = 6
 local FishingReelPollDelay = 0.04
-local FishingReelHitRepeats = 90
-local FishingReelHitBatchSize = 10
-local FishingReelFinisherHits = 20
+local FishingReelHitRepeats = 64
+local FishingReelHitBatchSize = 16
 local FishingReelEndRepeats = 2
-local FishingCatchingHitTimeout = 1.8
-local FishingCatchingSettleDelay = 0.08
-local FishingPostReelDelay = 0.03
+local FishingCatchingSettleDelay = 0.015
+local FishingPostReelDelay = 0.005
 local FishingCycleDelay = 0.005
 local FishingIdleDelay = 0.2
 local FishingHotspotHoverHeight = 9
@@ -669,16 +670,11 @@ local function triggerFishingCatchFromAttribute(reelHitRemote, reelEndRemote, si
         return false
     end
 
-    local startedAt = os.clock()
     local hits = 0
 
-    while canContinueFishing(singleRun)
-        and isFishingCatchingActive()
-        and hits < FishingReelHitRepeats
-        and os.clock() - startedAt < FishingCatchingHitTimeout
-    do
+    while canContinueFishing(singleRun) and hits < FishingReelHitRepeats do
         for _ = 1, FishingReelHitBatchSize do
-            if not canContinueFishing(singleRun) or not isFishingCatchingActive() or hits >= FishingReelHitRepeats then
+            if not canContinueFishing(singleRun) or hits >= FishingReelHitRepeats then
                 break
             end
 
@@ -689,27 +685,15 @@ local function triggerFishingCatchFromAttribute(reelHitRemote, reelEndRemote, si
         task.wait()
     end
 
-    if isFishingCatchingActive() then
-        for _ = 1, FishingReelFinisherHits do
-            if not canContinueFishing(singleRun) or not isFishingCatchingActive() then
-                break
-            end
+    task.wait(FishingCatchingSettleDelay)
 
-            mainCallRemote(reelHitRemote)
+    for _ = 1, FishingReelEndRepeats do
+        if not canContinueFishing(singleRun) then
+            return false
         end
 
+        mainCallRemote(reelEndRemote)
         task.wait(FishingCatchingSettleDelay)
-    end
-
-    if isFishingCatchingActive() then
-        for _ = 1, FishingReelEndRepeats do
-            if not canContinueFishing(singleRun) then
-                return false
-            end
-
-            mainCallRemote(reelEndRemote)
-            task.wait(FishingCatchingSettleDelay)
-        end
     end
 
     task.wait(FishingPostReelDelay)
@@ -1086,6 +1070,90 @@ local function dropHeldFishCatchAt(position)
     return true
 end
 
+local function getLootNameCandidates(entry)
+    local names = {}
+
+    local function addName(value)
+        if type(value) == "string" and value ~= "" and not names[value] then
+            names[value] = true
+        end
+    end
+
+    if entry then
+        if entry.Root then
+            addName(entry.Root.Name)
+            addName(entry.Root:GetAttribute("MaterialString"))
+            addName(entry.Root:GetAttribute("ItemName"))
+            addName(entry.Root:GetAttribute("FishName"))
+        end
+
+        if entry.Part then
+            addName(entry.Part.Name)
+            addName(entry.Part:GetAttribute("MaterialString"))
+            addName(entry.Part:GetAttribute("ItemName"))
+            addName(entry.Part:GetAttribute("FishName"))
+        end
+    end
+
+    return names
+end
+
+local function fishingStoreFilterAllows(entry)
+    local filter = FishingState.StoreFilter
+
+    if not filter or filter.All then
+        return true
+    end
+
+    for name in pairs(getLootNameCandidates(entry)) do
+        if filter[name] then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function getFishingLootFilterValues()
+    local values = { "All" }
+    local seen = {
+        All = true,
+    }
+
+    for _, entry in ipairs(getCatchParts()) do
+        for name in pairs(getLootNameCandidates(entry)) do
+            if not seen[name] then
+                seen[name] = true
+                values[#values + 1] = name
+            end
+        end
+    end
+
+    table.sort(values, function(a, b)
+        if a == "All" then
+            return true
+        end
+
+        if b == "All" then
+            return false
+        end
+
+        return a:lower() < b:lower()
+    end)
+
+    return values
+end
+
+local function refreshFishingLootFilter()
+    if Options.FishingStoreLootFilter then
+        Options.FishingStoreLootFilter:SetValues(getFishingLootFilterValues())
+
+        if not next(FishingState.StoreFilter or {}) then
+            Options.FishingStoreLootFilter:SetValue({ "All" })
+        end
+    end
+end
+
 local function storeFishCatchesAtBase()
     if not getMainPlotDropPosition(1) then
         finishFishingAtBase()
@@ -1101,10 +1169,12 @@ local function storeFishCatchesAtBase()
     local moved = 0
 
     for _, entry in ipairs(catches) do
-        local destination = getMainPlotDropPosition(moved + 1)
+        if fishingStoreFilterAllows(entry) then
+            local destination = getMainPlotDropPosition(moved + 1)
 
-        if destination and moveCatchToSell(entry, destination) then
-            moved = moved + 1
+            if destination and moveCatchToSell(entry, destination) then
+                moved = moved + 1
+            end
         end
     end
 
@@ -1209,6 +1279,19 @@ FishingBox:AddToggle("FishingUseHotspots", {
 })
 
 FishingBox:AddDivider("Storage")
+FishingBox:AddDropdown("FishingStoreLootFilter", {
+    Text = "Loot to store",
+    Values = { "All" },
+    Default = { "All" },
+    Multi = true,
+    Searchable = true,
+})
+
+FishingBox:AddButton({
+    Text = "Refresh loot list",
+    Func = refreshFishingLootFilter,
+})
+
 FishingBox:AddButton({
     Text = "Sell fish",
     Func = function()
@@ -1242,6 +1325,12 @@ end)
 
 Toggles.FishingAutoSell:OnChanged(function(enabled)
     FishingState.AutoSell = enabled
+end)
+
+Options.FishingStoreLootFilter:OnChanged(function(value)
+    FishingState.StoreFilter = value or {
+        All = true,
+    }
 end)
 
 Toggles.FishingAutoStore:OnChanged(function(enabled)
@@ -4107,7 +4196,7 @@ end
 if SaveManager then
     SaveManager:SetLibrary(Library)
     SaveManager:IgnoreThemeSettings()
-    SaveManager:SetIgnoreIndexes({ "MenuKeybind", "MiningAutoFarm", "FishingAutoFish", "FishingAutoSell", "FishingAutoStore" })
+    SaveManager:SetIgnoreIndexes({ "MenuKeybind", "MiningAutoFarm", "FishingAutoFish", "FishingAutoSell", "FishingAutoStore", "FishingStoreLootFilter" })
     SaveManager:SetFolder("voidra")
     SaveManager:SetSubFolder(tostring(game.PlaceId))
     SaveManager:BuildConfigSection(Tabs.Settings)
