@@ -218,6 +218,7 @@ local FishingReelEndRepeats = 1
 local FishingCycleDelay = 0.45
 local FishingIdleDelay = 2
 local FishingHotspotHoverHeight = 9
+local FishingBaseTeleportOffset = 5
 local FishingSellAfterCatchDelay = 0.35
 local FishingSellDropSpacing = 4
 local FishingSellMoveRepeats = 10
@@ -334,10 +335,107 @@ local function getMainPosition(instance)
     return part and part.Position or nil
 end
 
+local function ownerMatchesMainPlayer(owner)
+    if not owner then
+        return false
+    end
+
+    if owner:IsA("ObjectValue") then
+        local value = owner.Value
+        return value == LocalPlayer
+            or value == LocalPlayer.Character
+            or value == LocalPlayer.Name
+            or tostring(value) == LocalPlayer.Name
+    end
+
+    if owner:IsA("StringValue") then
+        return owner.Value == LocalPlayer.Name
+            or owner.Value == tostring(LocalPlayer.UserId)
+    end
+
+    if owner:IsA("IntValue") or owner:IsA("NumberValue") then
+        return owner.Value == LocalPlayer.UserId
+    end
+
+    return owner:GetAttribute("UserId") == LocalPlayer.UserId
+        or owner:GetAttribute("Owner") == LocalPlayer.Name
+end
+
+local function getMainAreaData(target, fallbackSize)
+    if not target then
+        return nil, nil, nil
+    end
+
+    if target:IsA("BasePart") then
+        return target.Position, target.Size, target.Position.Y + (target.Size.Y / 2)
+    end
+
+    if target:IsA("Model") then
+        local cframe, size = target:GetBoundingBox()
+        return cframe.Position, size, cframe.Position.Y + (size.Y / 2)
+    end
+
+    local part = target:FindFirstChildWhichIsA("BasePart", true)
+    if part then
+        return part.Position, fallbackSize or part.Size, part.Position.Y + (part.Size.Y / 2)
+    end
+
+    return nil, nil, nil
+end
+
+local function getMainLocalPlot()
+    local plots = workspace:FindFirstChild("Plots")
+
+    if not plots then
+        return nil
+    end
+
+    for _, plot in ipairs(plots:GetChildren()) do
+        local owner = plot:FindFirstChild("Owner", true) or plot:FindFirstChild("owner", true)
+
+        if ownerMatchesMainPlayer(owner) then
+            return plot
+        end
+    end
+
+    return nil
+end
+
+local function getMainPlotStandPosition()
+    local plot = getMainLocalPlot()
+
+    if not plot then
+        return nil
+    end
+
+    local target = plot:FindFirstChild("Plot")
+        or plot:FindFirstChild("ProjectionZone")
+        or plot:FindFirstChild("Objects")
+        or plot
+
+    local position, _, topY = getMainAreaData(target, Vector3.new(36, 1, 36))
+
+    if not position then
+        return nil
+    end
+
+    return Vector3.new(position.X, topY + FishingBaseTeleportOffset, position.Z)
+end
+
 local function stopFishingHover()
     if FishingHoverMover then
         FishingHoverMover:Destroy()
         FishingHoverMover = nil
+    end
+end
+
+local function finishFishingAtBase()
+    stopFishingHover()
+
+    local position = getMainPlotStandPosition()
+
+    if position then
+        setMainCharacterAt(position)
     end
 end
 
@@ -861,7 +959,14 @@ FishingBox:AddButton({
     Func = function()
         task.spawn(function()
             FishingState.StopRequested = false
-            runFishingCycle(true)
+            local ok, result = pcall(runFishingCycle, true)
+
+            if not ok then
+                warn("[voidra] Fish once failed: " .. tostring(result))
+                mainNotify("Fish once failed. Check console.")
+            end
+
+            finishFishingAtBase()
         end)
     end,
 })
@@ -913,7 +1018,12 @@ Toggles.FishingAutoFish:OnChanged(function(enabled)
     FishingState.AutoFish = enabled
     FishingState.StopRequested = not enabled
 
-    if not enabled or fishingLoopRunning then
+    if not enabled then
+        task.spawn(finishFishingAtBase)
+        return
+    end
+
+    if fishingLoopRunning then
         return
     end
 
@@ -921,17 +1031,24 @@ Toggles.FishingAutoFish:OnChanged(function(enabled)
 
     task.spawn(function()
         while canContinueFishing() do
-            local ok = runFishingCycle(false)
+            local ok, result = pcall(runFishingCycle, false)
 
-            if ok and FishingState.AutoSell then
+            if not ok then
+                warn("[voidra] Auto fish failed: " .. tostring(result))
+                mainNotify("Auto fish failed. Check console.")
+            end
+
+            local cycleOk = ok and result == true
+
+            if cycleOk and FishingState.AutoSell then
                 task.wait(FishingSellAfterCatchDelay)
                 sellFishCatches()
             end
 
-            task.wait(ok and FishingCycleDelay or FishingIdleDelay)
+            task.wait(cycleOk and FishingCycleDelay or FishingIdleDelay)
         end
 
-        stopFishingHover()
+        finishFishingAtBase()
         fishingLoopRunning = false
     end)
 end)
