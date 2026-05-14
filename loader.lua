@@ -1129,7 +1129,7 @@ local function sellFishCatches()
     return moved
 end
 
-local TalentsBox = Tabs.Main:AddLeftGroupbox("Talents", "sparkles")
+local TalentsBox = Tabs.Main:AddRightGroupbox("Talents", "sparkles")
 
 TalentsBox:AddButton({
     Text = "Get Tool Reaper",
@@ -1138,7 +1138,7 @@ TalentsBox:AddButton({
     end,
 })
 
-local FishingBox = Tabs.Main:AddRightGroupbox("Fishing", "fish")
+local FishingBox = Tabs.Main:AddLeftGroupbox("Fishing", "fish")
 
 FishingBox:AddButton({
     Text = "Fish once",
