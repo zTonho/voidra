@@ -212,9 +212,12 @@ local FishingCastAttackDelay = 0.02
 local FishingLineLandDelay = 0.48
 local FishingReelWaitTimeout = 6
 local FishingReelPollDelay = 0.04
-local FishingReelHitRepeats = 36
-local FishingReelHitBatchSize = 6
+local FishingReelHitRepeats = 90
+local FishingReelHitBatchSize = 10
+local FishingReelFinisherHits = 20
 local FishingReelEndRepeats = 2
+local FishingCatchingHitTimeout = 1.8
+local FishingCatchingSettleDelay = 0.08
 local FishingPostReelDelay = 0.18
 local FishingCycleDelay = 0.05
 local FishingIdleDelay = 0.35
@@ -661,6 +664,58 @@ local function recallFishingLine()
     end
 end
 
+local function triggerFishingCatchFromAttribute(reelHitRemote, reelEndRemote, singleRun)
+    if not isFishingCatchingActive() then
+        return false
+    end
+
+    local startedAt = os.clock()
+    local hits = 0
+
+    while canContinueFishing(singleRun)
+        and isFishingCatchingActive()
+        and hits < FishingReelHitRepeats
+        and os.clock() - startedAt < FishingCatchingHitTimeout
+    do
+        for _ = 1, FishingReelHitBatchSize do
+            if not canContinueFishing(singleRun) or not isFishingCatchingActive() or hits >= FishingReelHitRepeats then
+                break
+            end
+
+            mainCallRemote(reelHitRemote)
+            hits = hits + 1
+        end
+
+        task.wait()
+    end
+
+    if isFishingCatchingActive() then
+        for _ = 1, FishingReelFinisherHits do
+            if not canContinueFishing(singleRun) or not isFishingCatchingActive() then
+                break
+            end
+
+            mainCallRemote(reelHitRemote)
+        end
+
+        task.wait(FishingCatchingSettleDelay)
+    end
+
+    if isFishingCatchingActive() then
+        for _ = 1, FishingReelEndRepeats do
+            if not canContinueFishing(singleRun) then
+                return false
+            end
+
+            mainCallRemote(reelEndRemote)
+            task.wait(FishingCatchingSettleDelay)
+        end
+    end
+
+    task.wait(FishingPostReelDelay)
+    return hits > 0
+end
+
 local function runFishingCycle(singleRun)
     local chargeRemote = getEventsChild("Tools", "Charge")
     local attackRemote = getEventsChild("Tools", "Attack")
@@ -710,28 +765,7 @@ local function runFishingCycle(singleRun)
         return false
     end
 
-    for index = 1, FishingReelHitRepeats do
-        if not canContinueFishing(singleRun) then
-            return false
-        end
-
-        mainCallRemote(reelHitRemote)
-
-        if index % FishingReelHitBatchSize == 0 then
-            task.wait()
-        end
-    end
-
-    for _ = 1, FishingReelEndRepeats do
-        if not canContinueFishing(singleRun) then
-            return false
-        end
-
-        mainCallRemote(reelEndRemote)
-    end
-
-    task.wait(FishingPostReelDelay)
-    return true
+    return triggerFishingCatchFromAttribute(reelHitRemote, reelEndRemote, singleRun)
 end
 
 local function getNauticSellary()
