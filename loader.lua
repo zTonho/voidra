@@ -226,7 +226,9 @@ local FishingHotspotFolderScanInterval = 2
 local FishingHotspotStandHeight = 9
 local FishingHotspotSafeDropSpacing = 2
 local FishingHotspotSafeDropIgnoreRadius = 12
-local FishingHotspotLootMoveDelay = 0.08
+local FishingHotspotLootMoveDelay = 0.18
+local FishingHotspotPreEndDropDelay = 0.05
+local FishingHotspotPostDropSettleDelay = 0.12
 local FishingHotspotMaxMovePerPass = 10
 local FishingReelWaitTimeout = 6
 local FishingReelPollDelay = 0.04
@@ -258,6 +260,7 @@ local FishingSellBatchYieldEvery = 8
 local FishingHoverMover = nil
 local getCatchParts
 local moveHotspotCatchesToSafeSpot
+local dropHeldFishCatchAt
 local FishingSellRunning = false
 local FishingHotspotMoveRunning = false
 local LastFishingCatchAt = 0
@@ -837,6 +840,12 @@ local function triggerFishingCatchFromAttribute(reelHitRemote, reelEndRemote, si
 
     task.wait(FishingCatchingSettleDelay)
 
+    if LastFishingCastUsedHotspot then
+        stopFishingHover()
+        setMainCharacterAt(FishingHotspotSafeDropPosition)
+        task.wait(FishingHotspotPreEndDropDelay)
+    end
+
     for _ = 1, FishingReelEndRepeats do
         if not canContinueFishing(singleRun) then
             return false
@@ -1337,16 +1346,21 @@ moveHotspotCatchesToSafeSpot = function()
     FishingHotspotMoveRunning = true
     task.wait(FishingHotspotLootMoveDelay)
 
+    if dropHeldFishCatchAt then
+        dropHeldFishCatchAt(FishingHotspotSafeDropPosition)
+        task.wait(FishingHotspotPostDropSettleDelay)
+    end
+
     local moved = 0
 
     for _, entry in ipairs(getCatchParts(true)) do
         if not isCatchInsideMainPlot(entry)
             and not isCatchNearFishingHotspotSafeDrop(entry)
-            and isCatchNearMainCharacter(entry, FishingOwnedGrabScanRadius)
+            and isCatchNearMainCharacter(entry, 18)
         then
             local destination = getFishingHotspotSafeDropPosition(moved + 1)
 
-            if fastMoveCatchToSell(entry, destination) then
+            if moveCatchToSell(entry, destination, FishingStoreMoveRepeats, FishingStoreStepDelay) then
                 moved = moved + 1
 
                 if moved >= FishingHotspotMaxMovePerPass then
@@ -1360,7 +1374,7 @@ moveHotspotCatchesToSafeSpot = function()
     return moved > 0
 end
 
-local function dropHeldFishCatchAt(position)
+dropHeldFishCatchAt = function(position)
     local chargeRemote = getEventsChild("Tools", "Charge")
 
     if not chargeRemote or not position or not hasHeldFishingCatch() then
