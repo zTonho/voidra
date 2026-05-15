@@ -138,8 +138,8 @@ local Window = Library:CreateWindow({
 local Tabs = {
     Main = Window:AddTab("Main", "house"),
     Mining = Window:AddTab("Ores", "pickaxe"),
-    Teleports = Window:AddTab("Teleports", "map-pin"),
     Autobuy = Window:AddTab("Autobuy", "shopping-cart"),
+    Teleports = Window:AddTab("Teleports", "map-pin"),
     Player = Window:AddTab("Player", "user"),
     Settings = Window:AddTab("UI Settings", "settings"),
 }
@@ -240,13 +240,13 @@ local FishingPostReelDelay = 0.005
 local FishingCycleDelay = 0.005
 local FishingIdleDelay = 0.2
 local FishingAllowHotspotTeleport = false
-local FishingAllowAutoSellDuringAutoFish = false
+local FishingAllowAutoSellDuringAutoFish = true
 local FishingBaseTeleportOffset = 5
 local FishingBaseDropSpacing = 4
 local FishingBaseDropHeight = 1.25
 local FishingOwnedGrabScanRadius = 90
 local FishingHeldDropDelay = 0.12
-local FishingSellAfterCatchDelay = 0.02
+local FishingSellAfterCatchDelay = 0.25
 local FishingSellDropSpacing = 1.35
 local FishingSellDropHeight = 0.7
 local FishingSellCenterBiasScale = 0.18
@@ -1648,6 +1648,10 @@ end)
 
 Toggles.FishingAutoSell:OnChanged(function(enabled)
     FishingState.AutoSell = enabled
+
+    if enabled and not FishingSellRunning then
+        task.spawn(sellFishCatches)
+    end
 end)
 
 Toggles.FishingAutoFish:OnChanged(function(enabled)
@@ -4086,6 +4090,13 @@ TeleportsBox:AddButton({
     Text = "Vi's Lab",
     Func = function()
         teleportToLocation(Vector3.new(-4446.63, -195.77, -2029.90), "Vi's Lab")
+    end,
+})
+
+TeleportsBox:AddButton({
+    Text = "Lush Shop",
+    Func = function()
+        teleportToLocation(Vector3.new(-595.71, -531.71, 989.15), "Lush Shop")
     end,
 })
 
