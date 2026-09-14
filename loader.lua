@@ -1,5 +1,5 @@
 local BASE_URL =
-    "https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPOSITORIO/main/"
+    "https://raw.githubusercontent.com/zTonho/voidra/refs/heads/main/loader.lua"
 
 local function LoadFile(path)
     local url = BASE_URL .. path
